@@ -928,8 +928,6 @@ paths:
 
       operationId: getCurrentTokenAbilities
 
-      x-required-ability: admin
-
       tags: [ Tokens ]
 
       summary: Abilities текущего токена (для MCP introspection)
@@ -940,6 +938,11 @@ paths:
         Возвращает abilities текущего access token. Для session-auth
         (TransientToken) возвращает `["*"]` (god-доступ). Используется
         MCP-сервером для introspection перед ability-filtering списка tools.
+
+        Эндпоинт НЕ требует ability-gate: токен получает только свои СОБСТВЕННЫЕ
+        abilities (он и так их знает), это не privilege-escalation. Любой
+        аутентифицированный токен может introspect'ить себя — иначе read/deploy
+        токены не смогли бы использовать MCP (chicken-and-egg с ability-filtering).
 
       responses:
 
