@@ -922,6 +922,45 @@ paths:
 
         "422": { description: Ошибка валидации }
 
+  /tokens/abilities:
+
+    get:
+
+      operationId: getCurrentTokenAbilities
+
+      x-required-ability: admin
+
+      tags: [ Tokens ]
+
+      summary: Abilities текущего токена (для MCP introspection)
+
+      security: [ { sanctum: [ ] } ]
+
+      description: |
+        Возвращает abilities текущего access token. Для session-auth
+        (TransientToken) возвращает `["*"]` (god-доступ). Используется
+        MCP-сервером для introspection перед ability-filtering списка tools.
+
+      responses:
+
+        "200":
+          description: Abilities текущего токена
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ abilities ]
+                properties:
+                  abilities:
+                    type: array
+                    items:
+                      type: string
+                    description: |
+                      Abilities токена (`read`, `deploy`, `admin`) или `["*"]`
+                      для session-auth/TransientToken (god-доступ).
+
+        "401": { description: Неавторизован (невалидный/просроченный токен) }
+
   /tokens/{token}:
 
     delete:
