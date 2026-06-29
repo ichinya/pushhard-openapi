@@ -1,0 +1,2370 @@
+openapi: 3.0.3
+
+info:
+
+  title: PushHard API
+
+  description: |
+    Self-hosted deployment automation platform.
+    Spec-first contract — source of truth for api (PHP), web (Vue), and MCP.
+    Public webhooks and SSE stream live in routes/web.php (no /api/ prefix)
+    and are documented in docs/api.md, not in this spec.
+
+  version: 2.0.0
+
+servers:
+
+  - url: http://localhost:8000/api
+
+    description: Local development
+
+tags:
+
+  - name: Auth
+
+  - name: Profile
+
+  - name: Tokens
+
+  - name: Projects
+
+  - name: Webhooks
+
+  - name: Bindings
+
+  - name: Servers
+
+  - name: Deployments
+
+components:
+
+  securitySchemes:
+
+    sanctum:
+
+      type: http
+
+      scheme: bearer
+
+  schemas:
+
+    Project:
+
+      type: object
+
+      properties:
+
+        id: { type: string, description: "PublicId (ULID)" }
+
+        name: { type: string }
+
+        github_repo: { type: string }
+
+        repository_url: { type: string, nullable: true }
+
+        github_branch: { type: string }
+
+        is_private: { type: boolean }
+
+        repo_auth_type: { type: string, default: none, enum: [ none, https, ssh ] }
+
+        repo_auth_username: { type: string, nullable: true }
+
+        repo_auth_configured: { type: boolean }
+
+        created_at: { type: string, format: date-time }
+
+        updated_at: { type: string, format: date-time }
+
+    Server:
+
+      type: object
+
+      properties:
+
+        id: { type: string, description: "PublicId (ULID)" }
+
+        name: { type: string }
+
+        host: { type: string }
+
+        port: { type: integer }
+
+        user: { type: string }
+
+        server_type: { type: string, enum: [ regular, build ] }
+
+        auth_type: { type: string, enum: [ key, password ] }
+
+        projects_count: { type: integer }
+
+        deployments_count: { type: integer }
+
+        created_at: { type: string, format: date-time }
+
+        updated_at: { type: string, format: date-time }
+
+    ServerSummary:
+
+      type: object
+
+      properties:
+
+        id: { type: string, description: "PublicId (ULID)" }
+
+        name: { type: string }
+
+        host: { type: string }
+
+        server_type: { type: string, enum: [ regular, build ] }
+
+    DeploymentProjectSummary:
+
+      type: object
+
+      properties:
+
+        id: { type: string, description: "PublicId (ULID)" }
+
+        name: { type: string }
+
+    DeploymentExecutionPlan:
+
+      type: object
+
+      properties:
+
+        version: { type: integer }
+
+        deployment_id: { type: string, description: "PublicId (ULID)" }
+
+        project_id: { type: string, description: "PublicId (ULID)" }
+
+        stage: { type: string, enum: [ dev, staging, prod ] }
+
+        target_server_id: { type: string, description: "PublicId (ULID)" }
+
+        build_server_id: { type: string, description: "PublicId (ULID)" }
+
+        target_server: { $ref: '#/components/schemas/ServerSummary' }
+
+        build_server: { $ref: '#/components/schemas/ServerSummary' }
+
+        build_target_same_server: { type: boolean }
+
+        fallback_reason: { type: string, enum: [ explicit_build_server, target_is_build, deployment_server_fallback ] }
+
+        recipe: { type: string }
+
+        paths:
+          type: object
+          properties:
+            deploy_path: { type: string }
+            php_path: { type: string }
+            artifact_staging_path: { type: string }
+
+        lifecycle:
+          type: object
+          properties:
+            has_test_cmd: { type: boolean }
+            has_build_cmd: { type: boolean }
+            has_before_symlink_cmd: { type: boolean }
+            has_stop_cmd: { type: boolean }
+            has_migrate_cmd: { type: boolean }
+            has_after_symlink_cmd: { type: boolean }
+            has_start_cmd: { type: boolean }
+            has_restart_cmd: { type: boolean }
+            upload_paths:
+              type: array
+              items: { type: string }
+
+        keep_releases: { type: integer }
+
+        resolved_at: { type: string, format: date-time }
+
+    ServerBindingContract:
+
+      description: |
+        Canonical project-server binding (ProjectServerBindingService::mapBinding form).
+        Differs from old ServerBinding: server-side view replaced by project-side view.
+
+      type: object
+
+      properties:
+
+        id: { type: integer, description: "Pivot id (NOT a PublicId)" }
+
+        server_id: { type: string, description: "PublicId (ULID)" }
+
+        server_name: { type: string }
+
+        server_host: { type: string }
+
+        server_type: { type: string, enum: [ regular, build ] }
+
+        build_server_id: { type: string, nullable: true, description: "PublicId (ULID)" }
+
+        build_server:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/ServerSummary'
+
+        deploy_path: { type: string }
+
+        php_path: { type: string, nullable: true }
+
+        stage: { type: string, enum: [ dev, staging, prod ] }
+
+        health_url: { type: string, nullable: true }
+
+        recipe: { type: string }
+
+        keep_releases: { type: integer }
+
+        recipe_options: { type: object, nullable: true }
+
+        env_configured: { type: boolean }
+
+        env_lines_count: { type: integer }
+
+        created_at: { type: string, format: date-time }
+
+        updated_at: { type: string, format: date-time }
+
+    ServerDetailDeployment:
+
+      type: object
+
+      properties:
+
+        id: { type: string, description: "PublicId (ULID)" }
+
+        project_id: { type: string, description: "PublicId (ULID)" }
+
+        project_name: { type: string, nullable: true }
+
+        stage: { type: string, enum: [ dev, staging, prod ] }
+
+        status: { type: string }
+
+        trigger: { type: string, nullable: true }
+
+        started_at: { type: string, format: date-time, nullable: true }
+
+        finished_at: { type: string, format: date-time, nullable: true }
+
+        cancelled_at: { type: string, format: date-time, nullable: true }
+
+        error_message: { type: string, nullable: true }
+
+        created_at: { type: string, format: date-time, nullable: true }
+
+    ServerDetail:
+
+      allOf:
+
+        - $ref: '#/components/schemas/Server'
+
+        - type: object
+
+          properties:
+
+            bindings:
+              type: array
+              items:
+                $ref: '#/components/schemas/ServerBindingContract'
+
+            recent_deployments:
+              type: array
+              items:
+                $ref: '#/components/schemas/ServerDetailDeployment'
+
+    ServerMetrics:
+
+      type: object
+
+      properties:
+
+        status: { type: string, enum: [ available, unavailable ] }
+
+        checked_at: { type: string, format: date-time }
+
+        cpu:
+          type: object
+          properties:
+            usage_percent: { type: number, nullable: true }
+
+        memory:
+          type: object
+          properties:
+            used_mb: { type: integer, nullable: true }
+            total_mb: { type: integer, nullable: true }
+            usage_percent: { type: number, nullable: true }
+
+        disk:
+          type: object
+          properties:
+            used_gb: { type: number, nullable: true }
+            total_gb: { type: number, nullable: true }
+            usage_percent: { type: number, nullable: true }
+            mount: { type: string }
+
+        error: { type: string, nullable: true }
+
+    Deployment:
+
+      type: object
+
+      properties:
+
+        id: { type: string, description: "PublicId (ULID)" }
+
+        project_id: { type: string, description: "PublicId (ULID)" }
+
+        server_id: { type: string, description: "PublicId (ULID)" }
+
+        stage: { type: string, enum: [ dev, staging, prod ] }
+
+        status: { type: string, enum: [ queued, running, success, failed, cancelled ] }
+
+        trigger: { type: string, enum: [ api, webhook, manual ] }
+
+        provider: { type: string }
+
+        external_id: { type: string }
+
+        started_at: { type: string, format: date-time }
+
+        finished_at: { type: string, format: date-time, nullable: true }
+
+        cancelled_at: { type: string, format: date-time, nullable: true }
+
+        duration: { type: integer, nullable: true }
+
+        error_message: { type: string, nullable: true }
+
+        log: { type: string, nullable: true }
+
+        meta:
+          type: object
+          properties:
+            execution_plan: { $ref: '#/components/schemas/DeploymentExecutionPlan' }
+          additionalProperties: true
+
+        project:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/DeploymentProjectSummary'
+
+        server:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/ServerSummary'
+
+        created_at: { type: string, format: date-time }
+
+        updated_at: { type: string, format: date-time }
+
+    DeploymentStatus:
+
+      type: string
+
+      description: Runtime statuses (PHP enum covers pending/running/success/failed; queued/cancelled used via string constants)
+
+      enum: [ queued, running, success, failed, cancelled ]
+
+    WebhookSettings:
+
+      type: object
+
+      description: Inline payload form (WebhookSettingsController::payload, NOT WebhookResource)
+
+      properties:
+
+        id: { type: integer, nullable: true }
+
+        project_id: { type: string, description: "PublicId (ULID)" }
+
+        provider: { type: string, enum: [ custom, generic, github, gitlab ] }
+
+        enabled: { type: boolean }
+
+        secret_configured: { type: boolean }
+
+        secret_visible: { type: boolean }
+
+        secret: { type: string, nullable: true, description: "Returned only on creation/rotation, never on read" }
+
+        url: { type: string, nullable: true }
+
+        deploy_url: { type: string, nullable: true }
+
+        created_at: { type: string, format: date-time, nullable: true }
+
+        updated_at: { type: string, format: date-time, nullable: true }
+
+    RepositoryValidationResult:
+
+      type: object
+
+      properties:
+
+        valid: { type: boolean }
+
+        repository:
+          nullable: true
+          type: object
+          properties:
+            name: { type: string }
+            full_name: { type: string }
+            description: { type: string }
+            language: { type: string }
+            stars: { type: integer }
+            default_branch: { type: string }
+            is_private: { type: boolean }
+
+        message: { type: string, nullable: true }
+
+    DeploymentTriggerResponse:
+
+      type: object
+
+      properties:
+
+        id: { type: string, description: "PublicId (ULID)" }
+
+        status: { type: string, enum: [ queued ] }
+
+        message: { type: string }
+
+    DeploymentCancelResponse:
+
+      type: object
+
+      properties:
+
+        id: { type: string, description: "PublicId (ULID)" }
+
+        status: { type: string, enum: [ cancelled ] }
+
+        message: { type: string }
+
+    AvailableServer:
+
+      type: object
+
+      properties:
+
+        id: { type: string, description: "PublicId (ULID)" }
+
+        name: { type: string }
+
+        host: { type: string }
+
+        server_type: { type: string, enum: [ regular, build ] }
+
+    ServerEnvResponse:
+
+      type: object
+
+      properties:
+
+        binding_id: { type: integer }
+
+        env_content: { type: string }
+
+    OkResponse:
+
+      type: object
+
+      properties:
+
+        ok: { type: boolean }
+
+    Error:
+
+      type: object
+
+      properties:
+
+        message: { type: string }
+
+    User:
+
+      type: object
+
+      properties:
+
+        id: { type: integer }
+
+        name: { type: string }
+
+        email: { type: string, format: email }
+
+        created_at: { type: string, format: date-time }
+
+    ValidationError:
+
+      type: object
+
+      properties:
+
+        message: { type: string }
+
+        errors:
+
+          type: object
+
+          additionalProperties:
+
+            type: array
+
+            items: { type: string }
+
+    Token:
+
+      type: object
+
+      description: |
+        Sanctum Personal Access Token metadata. The `token` hash column is
+        never serialized; the plain-text token is returned exactly once by
+        POST /tokens in a separate `plain_text_token` field.
+
+      properties:
+
+        id: { type: integer }
+
+        name: { type: string }
+
+        abilities:
+          type: array
+          items:
+            type: string
+            enum: [ read, deploy, admin, '*' ]
+          description: Token abilities. '*' grants god access.
+
+        last_used_at: { type: string, format: date-time, nullable: true }
+
+        expires_at: { type: string, format: date-time, nullable: true }
+
+        created_at: { type: string, format: date-time }
+
+    CreateTokenResponse:
+
+      type: object
+
+      description: Response of POST /tokens. The plain-text token is shown once.
+
+      properties:
+
+        token: { $ref: '#/components/schemas/Token' }
+
+        plain_text_token:
+          type: string
+          description: Plain-text bearer token. Save it — shown only once.
+
+  parameters:
+
+    ProjectId:
+
+      name: project
+
+      in: path
+
+      required: true
+
+      schema:
+        type: string
+        pattern: '^[0-9A-HJKMNP-TV-Z]{26}$'
+        description: PublicId (ULID)
+
+    ServerId:
+
+      name: server
+
+      in: path
+
+      required: true
+
+      schema:
+        type: string
+        pattern: '^[0-9A-HJKMNP-TV-Z]{26}$'
+        description: PublicId (ULID)
+
+    DeploymentId:
+
+      name: deployment
+
+      in: path
+
+      required: true
+
+      schema:
+        type: string
+        pattern: '^[0-9A-HJKMNP-TV-Z]{26}$'
+        description: PublicId (ULID)
+
+paths:
+
+  /auth/register:
+
+    post:
+
+      operationId: registerUser
+
+      tags: [ Auth ]
+
+      summary: Регистрация нового пользователя
+
+      security: [ ]
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ name, email, password, password_confirmation ]
+              properties:
+                name: { type: string, example: "Иван Иванов" }
+                email: { type: string, format: email, example: "ivan@example.com" }
+                password: { type: string, format: password, minLength: 8, example: "password123" }
+                password_confirmation: { type: string, format: password, example: "password123" }
+
+      responses:
+
+        "201":
+          description: Успешная регистрация
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: '#/components/schemas/User' }
+
+        "422":
+          description: Ошибка валидации
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ValidationError' }
+
+  /auth/login:
+
+    post:
+
+      operationId: loginUser
+
+      tags: [ Auth ]
+
+      summary: Вход в систему
+
+      security: [ ]
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ email, password ]
+              properties:
+                email: { type: string, format: email, example: "ivan@example.com" }
+                password: { type: string, format: password, example: "password123" }
+                remember: { type: boolean, default: false, example: true }
+
+      responses:
+
+        "200":
+          description: Успешный вход
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: '#/components/schemas/User' }
+
+        "422":
+          description: Ошибка валидации или неверные учетные данные
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ValidationError' }
+
+        "429":
+          description: Слишком много попыток входа
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /auth/logout:
+
+    post:
+
+      operationId: logoutUser
+
+      tags: [ Auth ]
+
+      summary: Выход из системы
+
+      security: [ { sanctum: [ ] } ]
+
+      responses:
+
+        "200":
+          description: Успешный выход
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string, example: "Вы успешно вышли из системы" }
+
+        "401":
+          description: Неавторизован
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /auth/user:
+
+    get:
+
+      operationId: getCurrentUser
+
+      tags: [ Auth ]
+
+      summary: Получение данных текущего пользователя
+
+      security: [ { sanctum: [ ] } ]
+
+      responses:
+
+        "200":
+          description: Данные пользователя
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+
+        "401":
+          description: Неавторизован
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /profile:
+
+    patch:
+
+      operationId: updateProfile
+
+      tags: [ Profile ]
+
+      summary: Обновление данных профиля текущего пользователя
+
+      description: |
+        Частичное обновление name и/или email аутентифицированного
+        пользователя. Оба поля опциональны; передаются только изменяемые.
+
+      security: [ { sanctum: [ ] } ]
+
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 255 }
+                email: { type: string, format: email, maxLength: 255 }
+
+      responses:
+
+        "200":
+          description: Профиль обновлён
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+
+        "401":
+          description: Неавторизован
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "422":
+          description: Ошибка валидации
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ValidationError' }
+
+  /profile/password:
+
+    patch:
+
+      operationId: updatePassword
+
+      tags: [ Profile ]
+
+      summary: Смена пароля текущего пользователя
+
+      description: |
+        Смена пароля с проверкой текущего. Доступ ограничен
+        (throttle 5 запросов в минуту) для защиты от перебора
+        current_password при компрометации сессии.
+
+      security: [ { sanctum: [ ] } ]
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ current_password, password, password_confirmation ]
+              properties:
+                current_password: { type: string, format: password }
+                password: { type: string, format: password, minLength: 8 }
+                password_confirmation: { type: string, format: password, minLength: 8 }
+
+      responses:
+
+        "200":
+          description: Пароль обновлён
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+
+        "401":
+          description: Неавторизован
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "422":
+          description: Ошибка валидации (неверный current_password, слабый/неподтверждённый пароль)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ValidationError' }
+
+  /tokens:
+
+    get:
+
+      operationId: listTokens
+
+      x-required-ability: admin
+
+      tags: [ Tokens ]
+
+      summary: Список токенов текущего пользователя
+
+      security: [ { sanctum: [ ] } ]
+
+      description: |
+        Возвращает PAT текущего пользователя без хеша. Для token-auth
+        требует способность `admin` (session-auth = god-доступ).
+
+      responses:
+
+        "200":
+          description: Список токенов
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Token' }
+
+        "401": { description: Неавторизован }
+
+        "403": { description: Недостаточно способностей (token без admin) }
+
+    post:
+
+      operationId: createToken
+
+      x-required-ability: admin
+
+      tags: [ Tokens ]
+
+      summary: Создать Personal Access Token
+
+      security: [ { sanctum: [ ] } ]
+
+      description: |
+        Создаёт PAT и возвращает plain-text значение ОДИН РАЗ. Сохраните его —
+        повторно показать нельзя. Throttled 10/мин.
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ name, abilities ]
+              properties:
+                name: { type: string, maxLength: 255 }
+                abilities:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: string
+                    enum: [ read, deploy, admin, '*' ]
+                expires_at: { type: string, format: date-time, nullable: true }
+
+      responses:
+
+        "201":
+          description: Токен создан
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreateTokenResponse' }
+
+        "401": { description: Неавторизован }
+
+        "422": { description: Ошибка валидации }
+
+  /tokens/{token}:
+
+    delete:
+
+      operationId: deleteToken
+
+      x-required-ability: admin
+
+      tags: [ Tokens ]
+
+      summary: Отозвать токен
+
+      security: [ { sanctum: [ ] } ]
+
+      description: |
+        Отзывает PAT по числовому id (НЕ PublicId). Для token-auth требует `admin`.
+        Отзыв используемого токена инвалидирует запросы с ним.
+
+      parameters:
+
+        - name: token
+          in: path
+          required: true
+          schema: { type: integer }
+
+      responses:
+
+        "204": { description: Токен отозван }
+
+        "401": { description: Неавторизован }
+
+        "403": { description: Недостаточно способностей (token без admin) }
+
+        "404": { description: Токен не найден (не принадлежит пользователю) }
+
+  /projects:
+
+    get:
+
+      operationId: listProjects
+
+      x-required-ability: read
+
+      tags: [ Projects ]
+
+      summary: Список проектов
+
+      security: [ { sanctum: [ ] } ]
+
+      responses:
+
+        "200":
+          description: Список проектов
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Project' }
+
+    post:
+
+      operationId: createProject
+
+      x-required-ability: admin
+
+      tags: [ Projects ]
+
+      summary: Создать проект
+
+      security: [ { sanctum: [ ] } ]
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ name, github_repo ]
+              properties:
+                name: { type: string, maxLength: 255 }
+                github_repo: { type: string, maxLength: 255 }
+                github_branch: { type: string, nullable: true }
+                github_token: { type: string, nullable: true }
+                is_private: { type: boolean, nullable: true }
+                repo_auth_type: { type: string, nullable: true, enum: [ none, https, ssh ] }
+                repo_auth_username: { type: string, nullable: true }
+                repo_auth_secret: { type: string, nullable: true }
+                repo_ssh_private_key: { type: string, nullable: true }
+
+      responses:
+
+        "201":
+          description: Проект создан
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Project' }
+
+        "422":
+          description: Ошибка валидации
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ValidationError' }
+
+  /projects/validate-repository:
+
+    post:
+
+      operationId: validateProjectRepository
+
+      x-required-ability: admin
+
+      tags: [ Projects ]
+
+      summary: Проверка доступа к репозиторию
+
+      security: [ { sanctum: [ ] } ]
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ github_repo ]
+              properties:
+                github_repo: { type: string, maxLength: 255 }
+                github_token: { type: string, nullable: true }
+                repo_auth_type: { type: string, nullable: true, enum: [ none, https, ssh ] }
+                repo_auth_username: { type: string, nullable: true }
+                repo_auth_secret: { type: string, nullable: true }
+                repo_ssh_private_key: { type: string, nullable: true }
+
+      responses:
+
+        "200":
+          description: Результат проверки
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RepositoryValidationResult' }
+
+        "504":
+          description: Тайм-аут проверки
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RepositoryValidationResult' }
+
+  /projects/{project}:
+
+    get:
+
+      operationId: getProject
+
+      x-required-ability: read
+
+      tags: [ Projects ]
+
+      summary: Детали проекта
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/ProjectId'
+
+      responses:
+
+        "200":
+          description: Проект с серверами, вебхуками и деплоями
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Project' }
+
+        "404":
+          description: Проект не найден
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+    put:
+
+      operationId: updateProject
+
+      x-required-ability: admin
+
+      tags: [ Projects ]
+
+      summary: Обновить проект
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/ProjectId'
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 255 }
+                github_repo: { type: string, maxLength: 255 }
+                github_branch: { type: string, nullable: true }
+                github_token: { type: string, nullable: true }
+                is_private: { type: boolean, nullable: true }
+                repo_auth_type: { type: string, nullable: true, enum: [ none, https, ssh ] }
+                repo_auth_username: { type: string, nullable: true }
+                repo_auth_secret: { type: string, nullable: true }
+                repo_ssh_private_key: { type: string, nullable: true }
+
+      responses:
+
+        "200":
+          description: Проект обновлён
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Project' }
+
+        "404":
+          description: Проект не найден
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+    delete:
+
+      operationId: deleteProject
+
+      x-required-ability: admin
+
+      tags: [ Projects ]
+
+      summary: Удалить проект
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/ProjectId'
+
+      responses:
+
+        "204": { description: Проект удалён }
+
+        "404":
+          description: Проект не найден
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /projects/{project}/deploy-hook:
+
+    get:
+
+      operationId: getProjectDeployHook
+
+      x-required-ability: read
+
+      tags: [ Webhooks ]
+
+      summary: Настройки custom deploy-hook проекта (со секретом)
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/ProjectId'
+
+      responses:
+
+        "200":
+          description: Настройки custom webhook
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookSettings' }
+
+    post:
+
+      operationId: createProjectDeployHook
+
+      x-required-ability: admin
+
+      tags: [ Webhooks ]
+
+      summary: Создать/rotate custom deploy-hook
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/ProjectId'
+
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                rotate: { type: boolean, nullable: true }
+                enabled: { type: boolean, nullable: true }
+
+      responses:
+
+        "200":
+          description: Настройки webhook (секрет возвращается при создании/rotate)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookSettings' }
+
+  /projects/{project}/webhook:
+
+    post:
+
+      operationId: upsertProjectWebhook
+
+      x-required-ability: admin
+
+      tags: [ Webhooks ]
+
+      summary: Upsert custom webhook (legacy alias для createProjectDeployHook)
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/ProjectId'
+
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                rotate: { type: boolean, nullable: true }
+                enabled: { type: boolean, nullable: true }
+
+      responses:
+
+        "200":
+          description: Настройки webhook
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookSettings' }
+
+    put:
+
+      operationId: upsertProjectWebhookPut
+
+      x-required-ability: admin
+
+      tags: [ Webhooks ]
+
+      summary: Upsert custom webhook (PUT)
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/ProjectId'
+
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                rotate: { type: boolean, nullable: true }
+                enabled: { type: boolean, nullable: true }
+
+      responses:
+
+        "200":
+          description: Настройки webhook
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookSettings' }
+
+  /projects/{project}/webhooks:
+
+    get:
+
+      operationId: listProjectWebhooks
+
+      x-required-ability: read
+
+      tags: [ Webhooks ]
+
+      summary: Список вебхуков проекта (по провайдерам)
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/ProjectId'
+
+      responses:
+
+        "200":
+          description: Map of provider to WebhookSettings
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  $ref: '#/components/schemas/WebhookSettings'
+
+  /projects/{project}/webhooks/{provider}:
+
+    post:
+
+      operationId: createProjectProviderWebhook
+
+      x-required-ability: admin
+
+      tags: [ Webhooks ]
+
+      summary: Создать webhook провайдера
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/ProjectId'
+
+        - name: provider
+          in: path
+          required: true
+          schema: { type: string, enum: [ custom, generic, github, gitlab ] }
+
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                rotate: { type: boolean, nullable: true }
+                enabled: { type: boolean, nullable: true }
+
+      responses:
+
+        "200":
+          description: Webhook (секрет возвращается при создании/rotate)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookSettings' }
+
+        "201":
+          description: Webhook создан (секрет возвращается при создании)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookSettings' }
+
+        "404":
+          description: Провайдер не найден
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+    patch:
+
+      operationId: updateProjectProviderWebhook
+
+      x-required-ability: admin
+
+      tags: [ Webhooks ]
+
+      summary: Обновить webhook провайдера
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/ProjectId'
+
+        - name: provider
+          in: path
+          required: true
+          schema: { type: string, enum: [ custom, generic, github, gitlab ] }
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ enabled ]
+              properties:
+                enabled: { type: boolean }
+
+      responses:
+
+        "200":
+          description: Webhook обновлён
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookSettings' }
+
+    delete:
+
+      operationId: deleteProjectProviderWebhook
+
+      x-required-ability: admin
+
+      tags: [ Webhooks ]
+
+      summary: Удалить webhook провайдера
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/ProjectId'
+
+        - name: provider
+          in: path
+          required: true
+          schema: { type: string, enum: [ custom, generic, github, gitlab ] }
+
+      responses:
+
+        "204": { description: Webhook удалён }
+
+  /projects/{project}/servers:
+
+    get:
+
+      operationId: listProjectServers
+
+      x-required-ability: read
+
+      tags: [ Bindings ]
+
+      summary: Список биндингов проект-сервер
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/ProjectId'
+
+      responses:
+
+        "200":
+          description: Список биндингов
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ServerBindingContract' }
+
+    post:
+
+      operationId: createProjectServerBinding
+
+      x-required-ability: admin
+
+      tags: [ Bindings ]
+
+      summary: Создать биндинг проект-сервер
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/ProjectId'
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ server_id, deploy_path, stage ]
+              properties:
+                server_id: { type: string, description: "PublicId (ULID)" }
+                build_server_id: { type: string, nullable: true, description: "PublicId (ULID)" }
+                deploy_path: { type: string, maxLength: 500 }
+                php_path: { type: string, nullable: true, maxLength: 255 }
+                stage: { type: string, enum: [ dev, staging, prod ] }
+                health_url: { type: string, format: uri, nullable: true, maxLength: 500 }
+                recipe: { type: string, enum: [ laravel, php, node, go ] }
+                keep_releases: { type: integer, minimum: 1, maximum: 50 }
+                recipe_options: { type: object }
+                env_content: { type: string, nullable: true, maxLength: 200000 }
+
+      responses:
+
+        "201":
+          description: Биндинг создан
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServerBindingContract' }
+
+        "409":
+          description: Дублирование биндинга
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "422":
+          description: Ошибка валидации
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ValidationError' }
+
+  /projects/{project}/servers/{binding_id}:
+
+    patch:
+
+      operationId: updateProjectServerBinding
+
+      x-required-ability: admin
+
+      tags: [ Bindings ]
+
+      summary: Обновить биндинг
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/ProjectId'
+
+        - name: binding_id
+          in: path
+          required: true
+          schema: { type: integer, description: "Pivot id (NOT a PublicId)" }
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                server_id: { type: string, description: "PublicId (ULID)" }
+                build_server_id: { type: string, nullable: true, description: "PublicId (ULID)" }
+                deploy_path: { type: string, maxLength: 500 }
+                php_path: { type: string, nullable: true, maxLength: 255 }
+                stage: { type: string, enum: [ dev, staging, prod ] }
+                health_url: { type: string, format: uri, nullable: true, maxLength: 500 }
+                recipe: { type: string, enum: [ laravel, php, node, go ] }
+                keep_releases: { type: integer, minimum: 1, maximum: 50 }
+                recipe_options: { type: object }
+
+      responses:
+
+        "200":
+          description: Биндинг обновлён
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServerBindingContract' }
+
+    delete:
+
+      operationId: deleteProjectServerBinding
+
+      x-required-ability: admin
+
+      tags: [ Bindings ]
+
+      summary: Удалить биндинг
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/ProjectId'
+
+        - name: binding_id
+          in: path
+          required: true
+          schema: { type: integer, description: "Pivot id (NOT a PublicId)" }
+
+      responses:
+
+        "204": { description: Биндинг удалён }
+
+  /projects/{project}/servers/{binding_id}/env:
+
+    get:
+
+      operationId: getProjectServerEnv
+
+      x-required-ability: read
+
+      tags: [ Bindings ]
+
+      summary: Получить .env биндинга (расшифрованный plain-text)
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/ProjectId'
+
+        - name: binding_id
+          in: path
+          required: true
+          schema: { type: integer }
+
+      responses:
+
+        "200":
+          description: Env content
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServerEnvResponse' }
+
+    put:
+
+      operationId: updateProjectServerEnv
+
+      x-required-ability: admin
+
+      tags: [ Bindings ]
+
+      summary: Обновить .env биндинга (хранится зашифрованным)
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/ProjectId'
+
+        - name: binding_id
+          in: path
+          required: true
+          schema: { type: integer }
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                env_content: { type: string, nullable: true, maxLength: 200000 }
+
+      responses:
+
+        "200":
+          description: Биндинг с обновлённым env
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServerBindingContract' }
+
+  /projects/{project}/available-servers:
+
+    get:
+
+      operationId: listAvailableServers
+
+      x-required-ability: read
+
+      tags: [ Bindings ]
+
+      summary: Доступные (не привязанные) серверы для проекта
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/ProjectId'
+
+      responses:
+
+        "200":
+          description: Список доступных серверов
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AvailableServer' }
+
+  /projects/{project}/deploy:
+
+    post:
+
+      operationId: triggerProjectDeploy
+
+      x-required-ability: deploy
+
+      tags: [ Deployments ]
+
+      summary: Триггер деплоя проекта
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/ProjectId'
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ server_id, stage ]
+              properties:
+                server_id: { type: string, description: "PublicId (ULID)" }
+                stage: { type: string, enum: [ dev, staging, prod ] }
+
+      responses:
+
+        "202":
+          description: Деплой поставлен в очередь
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeploymentTriggerResponse' }
+
+        "409":
+          description: Конфликт параллельного деплоя
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "422":
+          description: Нет биндинга к серверу
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ValidationError' }
+
+  /projects/{project}/deployments:
+
+    get:
+
+      operationId: listProjectDeployments
+
+      x-required-ability: read
+
+      tags: [ Deployments ]
+
+      summary: Деплои проекта (пагинированные)
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/ProjectId'
+
+      responses:
+
+        "200":
+          description: Пагинированный список деплоев
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Deployment' }
+                  links: { type: object }
+                  meta: { type: object }
+
+  /projects/{project}/deployments/{deployment}:
+
+    get:
+
+      operationId: getProjectDeployment
+
+      x-required-ability: read
+
+      tags: [ Deployments ]
+
+      summary: Детали деплоя в контексте проекта
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/ProjectId'
+
+        - $ref: '#/components/parameters/DeploymentId'
+
+      responses:
+
+        "200":
+          description: Деплой
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Deployment' }
+
+        "404":
+          description: Деплой не найден или не принадлежит проекту
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /projects/{project}/deployments/{deployment}/cancel:
+
+    post:
+
+      operationId: cancelProjectDeployment
+
+      x-required-ability: deploy
+
+      tags: [ Deployments ]
+
+      summary: Отменить деплой
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/ProjectId'
+
+        - $ref: '#/components/parameters/DeploymentId'
+
+      responses:
+
+        "200":
+          description: Деплой отменён
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeploymentCancelResponse' }
+
+        "400":
+          description: Деплой уже не в очереди
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "404":
+          description: Деплой не найден или не принадлежит проекту
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /servers:
+
+    get:
+
+      operationId: listServers
+
+      x-required-ability: read
+
+      tags: [ Servers ]
+
+      summary: Список серверов (пагинированный)
+
+      security: [ { sanctum: [ ] } ]
+
+      responses:
+
+        "200":
+          description: Пагинированный список серверов
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Server' }
+                  links: { type: object }
+                  meta: { type: object }
+
+    post:
+
+      operationId: createServer
+
+      x-required-ability: admin
+
+      tags: [ Servers ]
+
+      summary: Создать сервер
+
+      security: [ { sanctum: [ ] } ]
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ host ]
+              properties:
+                name: { type: string, nullable: true, maxLength: 255 }
+                host: { type: string, maxLength: 255 }
+                port: { type: integer, nullable: true, minimum: 1, maximum: 65535 }
+                user: { type: string, nullable: true, maxLength: 255 }
+                server_type: { type: string, nullable: true, enum: [ regular, build ] }
+                auth_type: { type: string, nullable: true, enum: [ key, password ] }
+                ssh_key_path: { type: string, nullable: true, maxLength: 500 }
+                ssh_key_content: { type: string, nullable: true }
+                password: { type: string, nullable: true, maxLength: 500 }
+
+      responses:
+
+        "201":
+          description: Сервер создан
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Server' }
+
+        "400":
+          description: Не удалось подключиться по SSH
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /servers/{server}:
+
+    get:
+
+      operationId: getServer
+
+      x-required-ability: read
+
+      tags: [ Servers ]
+
+      summary: Детали сервера
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/ServerId'
+
+      responses:
+
+        "200":
+          description: Server detail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServerDetail' }
+
+        "404":
+          description: Server not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+    patch:
+
+      operationId: updateServer
+
+      x-required-ability: admin
+
+      tags: [ Servers ]
+
+      summary: Обновить сервер
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/ServerId'
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 255 }
+                host: { type: string, maxLength: 255 }
+                port: { type: integer, minimum: 1, maximum: 65535 }
+                user: { type: string, maxLength: 255 }
+                server_type: { type: string, enum: [ regular, build ] }
+                auth_type: { type: string, enum: [ key, password ] }
+                ssh_key_path: { type: string, maxLength: 500 }
+                ssh_key_content: { type: string }
+                password: { type: string, maxLength: 500 }
+
+      responses:
+
+        "200":
+          description: Сервер обновлён
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Server' }
+
+        "404":
+          description: Сервер не найден
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+    delete:
+
+      operationId: deleteServer
+
+      x-required-ability: admin
+
+      tags: [ Servers ]
+
+      summary: Удалить сервер
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/ServerId'
+
+      responses:
+
+        "204": { description: Сервер удалён }
+
+        "404":
+          description: Сервер не найден
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /servers/{server}/metrics:
+
+    get:
+
+      operationId: getServerMetrics
+
+      x-required-ability: read
+
+      tags: [ Servers ]
+
+      summary: Метрики сервера
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/ServerId'
+
+      responses:
+
+        "200":
+          description: Server metrics snapshot
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServerMetrics' }
+
+        "404":
+          description: Server not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /deploy:
+
+    post:
+
+      operationId: legacyTriggerDeploy
+
+      x-required-ability: deploy
+
+      tags: [ Deployments ]
+
+      summary: Legacy trigger deploy
+
+      security: [ { sanctum: [ ] } ]
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ project_id, server_id ]
+              properties:
+                project_id: { type: string, description: "PublicId (ULID)" }
+                server_id: { type: string, description: "PublicId (ULID)" }
+                stage: { type: string, enum: [ dev, staging, prod ] }
+                idempotency_key: { type: string, maxLength: 100 }
+                reason: { type: string, maxLength: 255 }
+
+      responses:
+
+        "201":
+          description: Деплой создан
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Deployment' }
+
+  /deployments:
+
+    get:
+
+      operationId: listGlobalDeployments
+
+      x-required-ability: read
+
+      tags: [ Deployments ]
+
+      summary: Глобальный список деплоев (пагинированный)
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - name: project_id
+          in: query
+          required: false
+          schema: { type: string, description: "PublicId (ULID)" }
+
+        - name: status
+          in: query
+          required: false
+          schema: { type: string, enum: [ queued, running, success, failed, cancelled ] }
+
+        - name: stage
+          in: query
+          required: false
+          schema: { type: string, enum: [ dev, staging, prod ] }
+
+        - name: server_id
+          in: query
+          required: false
+          schema: { type: string, description: "PublicId (ULID)" }
+
+      responses:
+
+        "200":
+          description: Пагинированный список деплоев
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Deployment' }
+                  links: { type: object }
+                  meta: { type: object }
+
+  /deployments/{deployment}:
+
+    get:
+
+      operationId: getGlobalDeployment
+
+      x-required-ability: read
+
+      tags: [ Deployments ]
+
+      summary: Детали деплоя (глобальный доступ)
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/DeploymentId'
+
+      responses:
+
+        "200":
+          description: Деплой
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Deployment' }
+
+        "404":
+          description: Деплой не найден
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /deployments/{deployment}/retry:
+
+    post:
+
+      operationId: retryDeployment
+
+      x-required-ability: deploy
+
+      tags: [ Deployments ]
+
+      summary: Повторить деплой
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/DeploymentId'
+
+      responses:
+
+        "201":
+          description: Новый деплой создан (retry)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Deployment' }
+
+        "404":
+          description: Деплой не найден
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /deployments/{deployment}/rollback:
+
+    post:
+
+      operationId: rollbackDeployment
+
+      x-required-ability: deploy
+
+      tags: [ Deployments ]
+
+      summary: Откатить деплой
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/DeploymentId'
+
+      responses:
+
+        "200":
+          description: Откат инициирован
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OkResponse' }
+
+        "404":
+          description: Деплой не найден
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  # Public webhook receivers — also available from the root (web.php) for
+  # proxies that only forward /api/*. No auth; signed payloads.
+  /webhook/deploy/{project}/{token}:
+
+    get:
+
+      operationId: receiveDeployWebhookGet
+
+      tags: [ Webhooks ]
+
+      summary: Public deploy webhook (GET, custom token in path)
+
+      security: [ ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/ProjectId'
+
+        - name: token
+          in: path
+          required: true
+          schema: { type: string, pattern: '[A-Za-z0-9_-]+' }
+
+      responses:
+
+        "201": { description: Deploy queued }
+
+        "200": { description: Skipped/dedup }
+
+        "400": { description: Bad request }
+
+    post:
+
+      operationId: receiveDeployWebhookPost
+
+      tags: [ Webhooks ]
+
+      summary: Public deploy webhook (POST, custom token in path)
+
+      security: [ ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/ProjectId'
+
+        - name: token
+          in: path
+          required: true
+          schema: { type: string, pattern: '[A-Za-z0-9_-]+' }
+
+      responses:
+
+        "201": { description: Deploy queued }
+
+        "200": { description: Skipped/dedup }
+
+        "400": { description: Bad request }
+
+  /webhook/github/{project}:
+
+    post:
+
+      operationId: receiveGithubWebhook
+
+      tags: [ Webhooks ]
+
+      summary: GitHub webhook receiver
+
+      security: [ ]
+
+      description: |
+        Verifies X-Hub-Signature-256 HMAC header against the project's
+        GitHub webhook secret. Throttled 30/мин.
+
+      parameters:
+
+        - $ref: '#/components/parameters/ProjectId'
+
+      responses:
+
+        "201": { description: Deploy queued }
+
+        "200": { description: Skipped/dedup }
+
+        "400": { description: Bad request }
+
+        "401": { description: Bad signature }
+
+  /webhook/gitlab/{project}:
+
+    post:
+
+      operationId: receiveGitlabWebhook
+
+      tags: [ Webhooks ]
+
+      summary: GitLab webhook receiver
+
+      security: [ ]
+
+      description: |
+        Verifies webhook-signature (whsec_ ed25519) or X-Gitlab-Token against
+        the project's GitLab webhook secret. Throttled 30/мин.
+
+      parameters:
+
+        - $ref: '#/components/parameters/ProjectId'
+
+      responses:
+
+        "201": { description: Deploy queued }
+
+        "200": { description: Skipped/dedup }
+
+        "400": { description: Bad request }
+
+        "401": { description: Bad signature }

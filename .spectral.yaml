@@ -1,0 +1,20 @@
+# Spectral ruleset for PushHard OpenAPI spec.
+# Built-in rules only — path-param PublicId typing is enforced by the
+# RouteCoverageTest contract-test (Spectral doesn't know about the domain).
+extends:
+  - spectral:oas
+
+rules:
+  # operationId is required for every operation — MCP tool generation names
+  # tools by operationId, so missing/duplicate ids break the generator.
+  # (spectral:oas already defines operation-operationId; we just keep it as
+  # error and relax the project-irrelevant informational rules.)
+  operation-operationId: error
+
+  operation-operationId-unique: error
+
+  oas3-operation-security-defined: warn
+
+  # Relax info/contact/url, info/license — not enforced for this project.
+  info-contact: off
+  info-license: off
