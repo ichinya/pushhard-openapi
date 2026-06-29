@@ -1,0 +1,26 @@
+name: OpenAPI Lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate & Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Validate OpenAPI specification (structural)
+        run: npx -y @apidevtools/swagger-cli@4.0.4 validate openapi.yaml
+      - name: Lint OpenAPI specification (Spectral ruleset)
+        run: npx -y @stoplight/spectral-cli@6 lint openapi.yaml -r .spectral.yaml
