@@ -128,6 +128,127 @@ components:
 
         name: { type: string }
 
+    ServerBindingRecipe:
+
+      type: string
+
+      enum: [ laravel, php, node, go, docker_compose ]
+
+    DockerComposeMigrationTiming:
+
+      type: string
+
+      enum: [ before_up, after_up ]
+
+    DockerComposeRecipeOptions:
+
+      type: object
+
+      description: Docker Compose deployment recipe settings. Compose paths are repository-relative and are validated again after source checkout.
+
+      required: [ compose_file ]
+
+      additionalProperties: false
+
+      properties:
+
+        compose_file:
+          type: string
+          description: Repository-relative Docker Compose YAML path.
+          example: docker-compose.yml
+          maxLength: 500
+
+        env_file:
+          type: string
+          nullable: true
+          description: Optional repository-relative Compose env file path. This is not PushHard managed env content.
+          example: .env.production
+          maxLength: 500
+
+        test_commands:
+          type: array
+          description: Optional pre-deploy commands, one command per item.
+          items: { type: string, maxLength: 2000 }
+
+        smoke_commands:
+          type: array
+          description: Optional post-up smoke commands, one command per item.
+          items: { type: string, maxLength: 2000 }
+
+        migration_command:
+          type: string
+          nullable: true
+          description: Optional migration command executed at migration_timing.
+          maxLength: 2000
+
+        migration_timing:
+          $ref: '#/components/schemas/DockerComposeMigrationTiming'
+
+        image_transport:
+          type: string
+          enum: [ archive_copy ]
+          default: archive_copy
+          description: MVP transport for built images. Registry transport is intentionally unsupported.
+
+    ServerBindingRecipeOptions:
+
+      anyOf:
+        - $ref: '#/components/schemas/DockerComposeRecipeOptions'
+        - type: object
+          additionalProperties: true
+          description: Existing recipe-specific options for laravel, php, node, and go.
+
+    DockerComposeExecutionPlan:
+
+      type: object
+
+      description: Safe Docker Compose execution metadata stored in deployments.meta.execution_plan.
+
+      properties:
+
+        compose_file: { type: string }
+
+        env_file: { type: string, nullable: true }
+
+        compose_source: { type: string, enum: [ repository ] }
+
+        source_ref: { type: string, nullable: true }
+
+        source_revision: { type: string, nullable: true }
+
+        compose_project_name: { type: string }
+
+        compose_project_directory: { type: string, nullable: true }
+
+        compose_file_realpath: { type: string, nullable: true }
+
+        env_file_realpath: { type: string, nullable: true }
+
+        image_transport: { type: string, enum: [ archive_copy ] }
+
+        rollback_supported: { type: boolean, enum: [ false ] }
+
+        has_build: { type: boolean, nullable: true }
+
+        service_count: { type: integer, nullable: true, minimum: 0 }
+
+        generated_image_tags:
+          type: object
+          additionalProperties: { type: string }
+
+        archive:
+          type: object
+          nullable: true
+          properties:
+            basename: { type: string }
+            bytes: { type: integer, nullable: true, minimum: 0 }
+            copied: { type: boolean }
+
+        cleanup:
+          type: object
+          nullable: true
+          additionalProperties: { type: boolean }
+
     DeploymentExecutionPlan:
 
       type: object
@@ -154,7 +275,12 @@ components:
 
         fallback_reason: { type: string, enum: [ explicit_build_server, target_is_build, deployment_server_fallback ] }
 
-        recipe: { type: string }
+        recipe: { $ref: '#/components/schemas/ServerBindingRecipe' }
+
+        rollback_supported: { type: boolean }
+
+        compose:
+          $ref: '#/components/schemas/DockerComposeExecutionPlan'
 
         paths:
           type: object
@@ -217,11 +343,14 @@ components:
 
         health_url: { type: string, nullable: true }
 
-        recipe: { type: string }
+        recipe: { $ref: '#/components/schemas/ServerBindingRecipe' }
 
         keep_releases: { type: integer }
 
-        recipe_options: { type: object, nullable: true }
+        recipe_options:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/ServerBindingRecipeOptions'
 
         env_configured: { type: boolean }
 
@@ -1549,9 +1678,10 @@ paths:
                 php_path: { type: string, nullable: true, maxLength: 255 }
                 stage: { type: string, enum: [ dev, staging, prod ] }
                 health_url: { type: string, format: uri, nullable: true, maxLength: 500 }
-                recipe: { type: string, enum: [ laravel, php, node, go ] }
+                recipe: { $ref: '#/components/schemas/ServerBindingRecipe' }
                 keep_releases: { type: integer, minimum: 1, maximum: 50 }
-                recipe_options: { type: object }
+                recipe_options:
+                  $ref: '#/components/schemas/ServerBindingRecipeOptions'
                 env_content: { type: string, nullable: true, maxLength: 200000 }
 
       responses:
@@ -1610,9 +1740,10 @@ paths:
                 php_path: { type: string, nullable: true, maxLength: 255 }
                 stage: { type: string, enum: [ dev, staging, prod ] }
                 health_url: { type: string, format: uri, nullable: true, maxLength: 500 }
-                recipe: { type: string, enum: [ laravel, php, node, go ] }
+                recipe: { $ref: '#/components/schemas/ServerBindingRecipe' }
                 keep_releases: { type: integer, minimum: 1, maximum: 50 }
-                recipe_options: { type: object }
+                recipe_options:
+                  $ref: '#/components/schemas/ServerBindingRecipeOptions'
 
       responses:
 
@@ -2289,6 +2420,12 @@ paths:
 
         "404":
           description: Деплой не найден
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "422":
+          description: Rollback is unsupported for this deployment recipe, including docker_compose.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
