@@ -161,13 +161,18 @@ components:
         env_file:
           type: string
           nullable: true
-          description: Optional repository-relative Compose env file path. This is not PushHard managed env content.
+          description: Repository-relative effective env path. PushHard materializes managed runtime env here; when managed env is absent, an existing repository file is used as a fallback.
           example: .env.production
           maxLength: 500
 
+        validation_commands:
+          type: array
+          description: Optional pre-build validation commands, one command per item. Compose-aware commands use the effective build context.
+          items: { type: string, maxLength: 2000 }
+
         test_commands:
           type: array
-          description: Optional pre-deploy commands, one command per item.
+          description: Optional post-build test commands, one command per item. Compose-aware commands run after deterministic images are built.
           items: { type: string, maxLength: 2000 }
 
         smoke_commands:
@@ -355,6 +360,10 @@ components:
         env_configured: { type: boolean }
 
         env_lines_count: { type: integer }
+
+        build_env_configured: { type: boolean }
+
+        build_env_lines_count: { type: integer }
 
         created_at: { type: string, format: date-time }
 
@@ -591,16 +600,6 @@ components:
         host: { type: string }
 
         server_type: { type: string, enum: [ regular, build ] }
-
-    ServerEnvResponse:
-
-      type: object
-
-      properties:
-
-        binding_id: { type: integer }
-
-        env_content: { type: string }
 
     OkResponse:
 
@@ -1682,7 +1681,8 @@ paths:
                 keep_releases: { type: integer, minimum: 1, maximum: 50 }
                 recipe_options:
                   $ref: '#/components/schemas/ServerBindingRecipeOptions'
-                env_content: { type: string, nullable: true, maxLength: 200000 }
+                env_content: { type: string, nullable: true, maxLength: 200000, writeOnly: true }
+                build_env_content: { type: string, nullable: true, maxLength: 200000, writeOnly: true }
 
       responses:
 
@@ -1744,6 +1744,8 @@ paths:
                 keep_releases: { type: integer, minimum: 1, maximum: 50 }
                 recipe_options:
                   $ref: '#/components/schemas/ServerBindingRecipeOptions'
+                env_content: { type: string, nullable: true, maxLength: 200000, writeOnly: true }
+                build_env_content: { type: string, nullable: true, maxLength: 200000, writeOnly: true }
 
       responses:
 
@@ -1780,35 +1782,6 @@ paths:
 
   /projects/{project}/servers/{binding_id}/env:
 
-    get:
-
-      operationId: getProjectServerEnv
-
-      x-required-ability: read
-
-      tags: [ Bindings ]
-
-      summary: Получить .env биндинга (расшифрованный plain-text)
-
-      security: [ { sanctum: [ ] } ]
-
-      parameters:
-
-        - $ref: '#/components/parameters/ProjectId'
-
-        - name: binding_id
-          in: path
-          required: true
-          schema: { type: integer }
-
-      responses:
-
-        "200":
-          description: Env content
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/ServerEnvResponse' }
-
     put:
 
       operationId: updateProjectServerEnv
@@ -1836,13 +1809,16 @@ paths:
           application/json:
             schema:
               type: object
+              minProperties: 1
+              additionalProperties: false
               properties:
-                env_content: { type: string, nullable: true, maxLength: 200000 }
+                env_content: { type: string, nullable: true, maxLength: 200000, writeOnly: true }
+                build_env_content: { type: string, nullable: true, maxLength: 200000, writeOnly: true }
 
       responses:
 
         "200":
-          description: Биндинг с обновлённым env
+          description: Биндинг с безопасными configured/count признаками; secret content не возвращается
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ServerBindingContract' }
