@@ -140,15 +140,33 @@ components:
 
       enum: [ before_up, after_up ]
 
+      nullable: true
+
+      default: after_up
+
+      description: |
+        Migration lifecycle phase. When a migration mode is active and this field is omitted,
+        the effective default is after_up. Older clients may send migration_timing without
+        migration_service or migration_command; that timing-only payload is accepted but inert.
+
     DockerComposeRecipeOptions:
 
       type: object
 
-      description: Docker Compose deployment recipe settings. Compose paths are repository-relative and are validated again after source checkout.
+      description: |
+        Docker Compose deployment recipe settings. Compose paths are repository-relative and
+        are validated again after source checkout. migration_service selects structured mode
+        and is mutually exclusive with a non-empty legacy migration_command. migration_profile
+        requires migration_service. When neither migration field is active, migration_timing is
+        an optional inert compatibility value and new clients should omit it.
 
       required: [ compose_file ]
 
       additionalProperties: false
+
+      example:
+        compose_file: compose.prod.yml
+        image_transport: archive_copy
 
       properties:
 
@@ -183,8 +201,24 @@ components:
         migration_command:
           type: string
           nullable: true
-          description: Optional migration command executed at migration_timing.
+          description: Optional legacy migration command executed at migration_timing. Mutually exclusive with migration_service when non-empty.
           maxLength: 2000
+
+        migration_service:
+          type: string
+          nullable: true
+          description: Structured migration service name. Mutually exclusive with a non-empty migration_command.
+          pattern: '^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$'
+          maxLength: 128
+          example: migrate
+
+        migration_profile:
+          type: string
+          nullable: true
+          description: Optional Compose profile declared by migration_service. Requires migration_service.
+          pattern: '^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$'
+          maxLength: 128
+          example: release
 
         migration_timing:
           $ref: '#/components/schemas/DockerComposeMigrationTiming'
@@ -297,11 +331,21 @@ components:
         lifecycle:
           type: object
           properties:
+            has_validation_cmd: { type: boolean }
             has_test_cmd: { type: boolean }
             has_build_cmd: { type: boolean }
             has_before_symlink_cmd: { type: boolean }
             has_stop_cmd: { type: boolean }
-            has_migrate_cmd: { type: boolean }
+            has_migrate_cmd:
+              type: boolean
+              description: True for either structured or legacy active migration mode.
+            has_smoke_cmd: { type: boolean }
+            migration_mode:
+              type: string
+              enum: [ none, structured, legacy ]
+              description: Safe derived migration mode; command text is never included.
+            migration_timing:
+              $ref: '#/components/schemas/DockerComposeMigrationTiming'
             has_after_symlink_cmd: { type: boolean }
             has_start_cmd: { type: boolean }
             has_restart_cmd: { type: boolean }
@@ -1683,6 +1727,16 @@ paths:
                   $ref: '#/components/schemas/ServerBindingRecipeOptions'
                 env_content: { type: string, nullable: true, maxLength: 200000, writeOnly: true }
                 build_env_content: { type: string, nullable: true, maxLength: 200000, writeOnly: true }
+            examples:
+              dockerComposeWithoutMigration:
+                summary: Docker Compose binding without migration
+                value:
+                  server_id: 01J00000000000000000000000
+                  deploy_path: /var/www/example
+                  stage: prod
+                  recipe: docker_compose
+                  recipe_options:
+                    compose_file: compose.prod.yml
 
       responses:
 
@@ -1746,6 +1800,13 @@ paths:
                   $ref: '#/components/schemas/ServerBindingRecipeOptions'
                 env_content: { type: string, nullable: true, maxLength: 200000, writeOnly: true }
                 build_env_content: { type: string, nullable: true, maxLength: 200000, writeOnly: true }
+            examples:
+              dockerComposeWithoutMigration:
+                summary: Replace Docker Compose options and disable migration
+                value:
+                  recipe: docker_compose
+                  recipe_options:
+                    compose_file: compose.prod.yml
 
       responses:
 
