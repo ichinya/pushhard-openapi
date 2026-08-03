@@ -357,6 +357,288 @@ components:
 
         resolved_at: { type: string, format: date-time }
 
+    ManagedEnvScope:
+
+      type: string
+
+      enum: [ runtime, build ]
+
+      description: Independently revisioned managed env scope.
+
+    ManagedEnvRevision:
+
+      type: integer
+
+      format: int64
+
+      minimum: 0
+
+      description: Monotonic per-scope managed env revision.
+
+    ManagedEnvKey:
+
+      type: string
+
+      maxLength: 255
+
+      pattern: '^[A-Za-z_][A-Za-z0-9_]*$'
+
+    ManagedEnvContent:
+
+      type: string
+
+      minLength: 1
+
+      maxLength: 200000
+
+      writeOnly: true
+
+      description: Managed env document content. Secret content is never returned.
+
+    ManagedEnvMergeRequest:
+
+      type: object
+
+      additionalProperties: false
+
+      required: [ scope, mode, expected_revision ]
+
+      properties:
+
+        scope: { $ref: '#/components/schemas/ManagedEnvScope' }
+
+        mode: { type: string, enum: [ merge ] }
+
+        expected_revision: { $ref: '#/components/schemas/ManagedEnvRevision' }
+
+        content: { $ref: '#/components/schemas/ManagedEnvContent' }
+
+        remove_keys:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/ManagedEnvKey' }
+
+      anyOf:
+
+        - required: [ content ]
+
+        - required: [ remove_keys ]
+
+    ManagedEnvReplaceRequest:
+
+      type: object
+
+      additionalProperties: false
+
+      required: [ scope, mode, expected_revision, content ]
+
+      properties:
+
+        scope: { $ref: '#/components/schemas/ManagedEnvScope' }
+
+        mode: { type: string, enum: [ replace ] }
+
+        expected_revision: { $ref: '#/components/schemas/ManagedEnvRevision' }
+
+        content: { $ref: '#/components/schemas/ManagedEnvContent' }
+
+    ManagedEnvClearRequest:
+
+      type: object
+
+      additionalProperties: false
+
+      required: [ scope, mode, expected_revision ]
+
+      properties:
+
+        scope: { $ref: '#/components/schemas/ManagedEnvScope' }
+
+        mode: { type: string, enum: [ clear ] }
+
+        expected_revision: { $ref: '#/components/schemas/ManagedEnvRevision' }
+
+    ManagedEnvMutationRequest:
+
+      oneOf:
+
+        - $ref: '#/components/schemas/ManagedEnvMergeRequest'
+
+        - $ref: '#/components/schemas/ManagedEnvReplaceRequest'
+
+        - $ref: '#/components/schemas/ManagedEnvClearRequest'
+
+      discriminator:
+        propertyName: mode
+        mapping:
+          merge: '#/components/schemas/ManagedEnvMergeRequest'
+          replace: '#/components/schemas/ManagedEnvReplaceRequest'
+          clear: '#/components/schemas/ManagedEnvClearRequest'
+
+    ManagedEnvRevisionConflict:
+
+      type: object
+
+      additionalProperties: false
+
+      required: [ message, scope, current_revision ]
+
+      properties:
+
+        message: { type: string }
+
+        scope: { $ref: '#/components/schemas/ManagedEnvScope' }
+
+        current_revision: { $ref: '#/components/schemas/ManagedEnvRevision' }
+
+    ManagedEnvValidationError:
+
+      type: object
+
+      additionalProperties: false
+
+      required: [ message ]
+
+      properties:
+
+        message: { type: string }
+
+        errors:
+          type: object
+          additionalProperties:
+            type: array
+            items: { type: string }
+
+    LegacyManagedEnvUpdateRequest:
+
+      type: object
+
+      minProperties: 2
+
+      additionalProperties: false
+
+      properties:
+
+        env_content:
+          type: string
+          nullable: true
+          maxLength: 200000
+          writeOnly: true
+          deprecated: true
+
+        expected_env_revision:
+          type: integer
+          format: int64
+          minimum: 0
+          deprecated: true
+
+        build_env_content:
+          type: string
+          nullable: true
+          maxLength: 200000
+          writeOnly: true
+          deprecated: true
+
+        expected_build_env_revision:
+          type: integer
+          format: int64
+          minimum: 0
+          deprecated: true
+
+      anyOf:
+
+        - required: [ env_content ]
+
+        - required: [ build_env_content ]
+
+      allOf:
+
+        - oneOf:
+            - required: [ env_content, expected_env_revision ]
+            - not:
+                anyOf:
+                  - required: [ env_content ]
+                  - required: [ expected_env_revision ]
+
+        - oneOf:
+            - required: [ build_env_content, expected_build_env_revision ]
+            - not:
+                anyOf:
+                  - required: [ build_env_content ]
+                  - required: [ expected_build_env_revision ]
+
+    UpdateProjectServerBindingRequest:
+
+      type: object
+
+      minProperties: 1
+
+      additionalProperties: false
+
+      properties:
+
+        server_id: { type: string, description: "PublicId (ULID)" }
+
+        build_server_id: { type: string, nullable: true, description: "PublicId (ULID)" }
+
+        deploy_path: { type: string, maxLength: 500 }
+
+        php_path: { type: string, nullable: true, maxLength: 255 }
+
+        stage: { type: string, enum: [ dev, staging, prod ] }
+
+        health_url: { type: string, format: uri, nullable: true, maxLength: 500 }
+
+        recipe: { $ref: '#/components/schemas/ServerBindingRecipe' }
+
+        keep_releases: { type: integer, minimum: 1, maximum: 50 }
+
+        recipe_options: { $ref: '#/components/schemas/ServerBindingRecipeOptions' }
+
+        env_content:
+          type: string
+          nullable: true
+          maxLength: 200000
+          writeOnly: true
+          deprecated: true
+
+        expected_env_revision:
+          type: integer
+          format: int64
+          minimum: 0
+          deprecated: true
+
+        build_env_content:
+          type: string
+          nullable: true
+          maxLength: 200000
+          writeOnly: true
+          deprecated: true
+
+        expected_build_env_revision:
+          type: integer
+          format: int64
+          minimum: 0
+          deprecated: true
+
+      allOf:
+
+        - oneOf:
+            - required: [ env_content, expected_env_revision ]
+            - not:
+                anyOf:
+                  - required: [ env_content ]
+                  - required: [ expected_env_revision ]
+
+        - oneOf:
+            - required: [ build_env_content, expected_build_env_revision ]
+            - not:
+                anyOf:
+                  - required: [ build_env_content ]
+                  - required: [ expected_build_env_revision ]
+
     ServerBindingContract:
 
       description: |
@@ -403,11 +685,21 @@ components:
 
         env_configured: { type: boolean }
 
-        env_lines_count: { type: integer }
+        env_revision: { $ref: '#/components/schemas/ManagedEnvRevision' }
+
+        env_lines_count:
+          type: integer
+          minimum: 0
+          description: Number of nonblank stored runtime env lines; comments count and secret content is not returned.
 
         build_env_configured: { type: boolean }
 
-        build_env_lines_count: { type: integer }
+        build_env_revision: { $ref: '#/components/schemas/ManagedEnvRevision' }
+
+        build_env_lines_count:
+          type: integer
+          minimum: 0
+          description: Number of nonblank stored build env lines; comments count and secret content is not returned.
 
         created_at: { type: string, format: date-time }
 
@@ -1770,6 +2062,8 @@ paths:
 
       summary: Обновить биндинг
 
+      description: Обновляет metadata биндинга; legacy secret-поля требуют соответствующий expected revision.
+
       security: [ { sanctum: [ ] } ]
 
       parameters:
@@ -1786,20 +2080,7 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                server_id: { type: string, description: "PublicId (ULID)" }
-                build_server_id: { type: string, nullable: true, description: "PublicId (ULID)" }
-                deploy_path: { type: string, maxLength: 500 }
-                php_path: { type: string, nullable: true, maxLength: 255 }
-                stage: { type: string, enum: [ dev, staging, prod ] }
-                health_url: { type: string, format: uri, nullable: true, maxLength: 500 }
-                recipe: { $ref: '#/components/schemas/ServerBindingRecipe' }
-                keep_releases: { type: integer, minimum: 1, maximum: 50 }
-                recipe_options:
-                  $ref: '#/components/schemas/ServerBindingRecipeOptions'
-                env_content: { type: string, nullable: true, maxLength: 200000, writeOnly: true }
-                build_env_content: { type: string, nullable: true, maxLength: 200000, writeOnly: true }
+              $ref: '#/components/schemas/UpdateProjectServerBindingRequest'
             examples:
               dockerComposeWithoutMigration:
                 summary: Replace Docker Compose options and disable migration
@@ -1815,6 +2096,18 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ServerBindingContract' }
+
+        "409":
+          description: Legacy managed env revision conflict
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManagedEnvRevisionConflict' }
+
+        "422":
+          description: Ошибка валидации
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManagedEnvValidationError' }
 
     delete:
 
@@ -1843,15 +2136,68 @@ paths:
 
   /projects/{project}/servers/{binding_id}/env:
 
+    patch:
+
+      operationId: mutateProjectServerEnv
+
+      x-required-ability: admin
+
+      tags: [ Bindings ]
+
+      summary: Атомарно изменить managed runtime/build env
+
+      description: Применяет Merge, Replace или Clear к одному scope при совпадении expected revision.
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/ProjectId'
+
+        - name: binding_id
+          in: path
+          required: true
+          schema: { type: integer, description: "Pivot id (NOT a PublicId)" }
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ManagedEnvMutationRequest' }
+
+      responses:
+
+        "200":
+          description: Биндинг с новой revision и без secret content
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServerBindingContract' }
+
+        "409":
+          description: Managed env revision conflict
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManagedEnvRevisionConflict' }
+
+        "422":
+          description: Ошибка managed env валидации
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManagedEnvValidationError' }
+
     put:
 
       operationId: updateProjectServerEnv
+
+      deprecated: true
 
       x-required-ability: admin
 
       tags: [ Bindings ]
 
       summary: Обновить .env биндинга (хранится зашифрованным)
+
+      description: Deprecated migration surface; каждое переданное secret-поле требует соответствующий expected revision.
 
       security: [ { sanctum: [ ] } ]
 
@@ -1869,12 +2215,7 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              minProperties: 1
-              additionalProperties: false
-              properties:
-                env_content: { type: string, nullable: true, maxLength: 200000, writeOnly: true }
-                build_env_content: { type: string, nullable: true, maxLength: 200000, writeOnly: true }
+              $ref: '#/components/schemas/LegacyManagedEnvUpdateRequest'
 
       responses:
 
@@ -1883,6 +2224,18 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ServerBindingContract' }
+
+        "409":
+          description: Legacy managed env revision conflict
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManagedEnvRevisionConflict' }
+
+        "422":
+          description: Ошибка валидации
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManagedEnvValidationError' }
 
   /projects/{project}/available-servers:
 
