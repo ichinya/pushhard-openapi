@@ -23,3 +23,9 @@ jobs:
         run: npx -y @apidevtools/swagger-cli@4.0.4 validate openapi.yaml
       - name: Lint OpenAPI specification (Spectral ruleset)
         run: npx -y @stoplight/spectral-cli@6 lint openapi.yaml -r .spectral.yaml
+      - name: Bundle OpenAPI specification for semantic checks
+        run: npx -y @apidevtools/swagger-cli@4.0.4 bundle openapi.yaml --type json --outfile "$RUNNER_TEMP/openapi.json"
+      - name: Verify capability and preflight contracts
+        env:
+          LOG_LEVEL: info
+        run: node tests/semantic-contract.mjs "$RUNNER_TEMP/openapi.json"

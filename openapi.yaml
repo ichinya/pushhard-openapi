@@ -109,6 +109,9 @@ components:
 
         updated_at: { type: string, format: date-time }
 
+        capability_check:
+          $ref: '#/components/schemas/ServerCapabilityCheck'
+
         deployments:
           type: array
           description: Log-free deployment summaries; present when the relationship is loaded.
@@ -362,6 +365,9 @@ components:
             upload_paths:
               type: array
               items: { type: string }
+
+        preflight:
+          $ref: '#/components/schemas/DeploymentCapabilityPreflight'
 
         keep_releases: { type: integer }
 
@@ -711,6 +717,12 @@ components:
           minimum: 0
           description: Number of nonblank stored build env lines; comments count and secret content is not returned.
 
+        capability_checks:
+          type: array
+          maxItems: 2
+          items:
+            $ref: '#/components/schemas/ServerCapabilityCheck'
+
         created_at: { type: string, format: date-time }
 
         updated_at: { type: string, format: date-time }
@@ -794,6 +806,263 @@ components:
             mount: { type: string }
 
         error: { type: string, nullable: true }
+
+    ServerCapabilityId:
+
+      type: string
+
+      enum: [ git, docker_engine, docker_compose_v2, rsync ]
+
+    ServerCapabilityCheckContext:
+
+      type: object
+
+      additionalProperties: false
+
+      required: [ recipe, server_role, target_server_id ]
+
+      properties:
+
+        recipe:
+          type: string
+          enum: [ docker_compose, go ]
+
+        server_role:
+          type: string
+          enum: [ target, build ]
+
+        image_transport:
+          type: string
+          enum: [ archive_copy ]
+
+        target_server_id:
+          type: string
+          pattern: '^[0-9A-HJKMNP-TV-Z]{26}$'
+          description: Target server PublicId (ULID).
+
+        build_server_id:
+          type: string
+          pattern: '^[0-9A-HJKMNP-TV-Z]{26}$'
+          description: Optional build server PublicId (ULID). The API derives topology by comparing public IDs.
+
+    ServerCapabilityCheckRequest:
+
+      type: object
+
+      additionalProperties: false
+
+      properties:
+
+        context:
+          $ref: '#/components/schemas/ServerCapabilityCheckContext'
+
+    ServerCapabilityProbe:
+
+      type: object
+
+      additionalProperties: false
+
+      required: [ status, available, os_family, checked_at ]
+
+      properties:
+
+        status:
+          type: string
+          enum: [ checked, unavailable ]
+
+        available:
+          type: array
+          maxItems: 4
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/ServerCapabilityId'
+
+        os_family:
+          type: string
+          enum: [ debian, alpine, rhel, unknown ]
+
+        checked_at:
+          type: string
+          format: date-time
+
+        error_code:
+          type: string
+          enum: [ ssh_unavailable, authentication_failed, probe_timeout, probe_failed ]
+
+    ServerCapabilityInstallHint:
+
+      type: object
+
+      additionalProperties: false
+
+      required: [ capability, os_family, command ]
+
+      properties:
+
+        capability:
+          $ref: '#/components/schemas/ServerCapabilityId'
+
+        os_family:
+          type: string
+          enum: [ debian, alpine, rhel ]
+
+        command:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: Static server-generated installation hint. PushHard never executes it automatically.
+
+    ServerCapabilityEvaluation:
+
+      type: object
+
+      additionalProperties: false
+
+      required: [ status, server_role, required, missing, install_hints ]
+
+      properties:
+
+        status:
+          type: string
+          enum: [ ready, missing_capabilities, unavailable ]
+
+        server_role:
+          type: string
+          enum: [ target, build ]
+
+        required:
+          type: array
+          maxItems: 4
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/ServerCapabilityId'
+
+        missing:
+          type: array
+          maxItems: 4
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/ServerCapabilityId'
+
+        install_hints:
+          type: array
+          maxItems: 4
+          items:
+            $ref: '#/components/schemas/ServerCapabilityInstallHint'
+
+        error_code:
+          type: string
+          enum: [ probe_unavailable, probe_timeout ]
+
+    ServerCapabilityCheck:
+
+      type: object
+
+      additionalProperties: false
+
+      required: [ server_id, server_name, probe ]
+
+      properties:
+
+        server_id:
+          type: string
+          pattern: '^[0-9A-HJKMNP-TV-Z]{26}$'
+          description: Server PublicId (ULID).
+
+        server_name:
+          type: string
+          minLength: 1
+          maxLength: 255
+
+        probe:
+          $ref: '#/components/schemas/ServerCapabilityProbe'
+
+        evaluation:
+          $ref: '#/components/schemas/ServerCapabilityEvaluation'
+
+    DeploymentCapabilityPreflightParticipant:
+
+      type: object
+
+      additionalProperties: false
+
+      required: [ role, status, required, missing, checked_at ]
+
+      properties:
+
+        role:
+          type: string
+          enum: [ target, build, runner ]
+
+        server_id:
+          type: string
+          pattern: '^[0-9A-HJKMNP-TV-Z]{26}$'
+          description: Server PublicId (ULID); omitted for the Runner participant.
+
+        status:
+          type: string
+          enum: [ ready, missing_capabilities, unavailable ]
+
+        required:
+          type: array
+          maxItems: 4
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/ServerCapabilityId'
+
+        missing:
+          type: array
+          maxItems: 4
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/ServerCapabilityId'
+
+        checked_at:
+          type: string
+          format: date-time
+
+        error_code:
+          type: string
+          enum: [ capability_missing, probe_unavailable, probe_timeout ]
+
+    DeploymentCapabilityPreflight:
+
+      type: object
+
+      additionalProperties: false
+
+      required: [ status, participants, required_count, missing_count, checked_at ]
+
+      properties:
+
+        status:
+          type: string
+          enum: [ ready, missing_capabilities, unavailable ]
+
+        participants:
+          type: array
+          minItems: 1
+          maxItems: 3
+          items:
+            $ref: '#/components/schemas/DeploymentCapabilityPreflightParticipant'
+
+        required_count:
+          type: integer
+          minimum: 0
+          maximum: 12
+
+        missing_count:
+          type: integer
+          minimum: 0
+          maximum: 12
+
+        checked_at:
+          type: string
+          format: date-time
+
+        error_code:
+          type: string
+          enum: [ capability_missing, probe_unavailable, probe_timeout ]
 
     DeploymentSummary:
 
@@ -2629,6 +2898,76 @@ paths:
 
         "404":
           description: Сервер не найден
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /servers/{server}/capabilities/check:
+
+    post:
+
+      operationId: checkServerCapabilities
+
+      x-required-ability: read
+
+      tags: [ Servers ]
+
+      summary: Проверить deployment capabilities сервера
+
+      description: |
+        Выполняет fresh read-only probe фиксированного capability catalog.
+        Пустой body обновляет только context-free inventory. Optional context
+        добавляет advisory evaluation; deployment runtime всегда перепроверяет
+        authoritative topology самостоятельно.
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/ServerId'
+
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServerCapabilityCheckRequest'
+
+      responses:
+
+        "200":
+          description: Safe capability probe and optional advisory evaluation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServerCapabilityCheck'
+
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "403":
+          description: Token ability is insufficient
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "404":
+          description: Server not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "422":
+          description: Invalid advisory context
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ValidationError' }
+
+        "429":
+          description: Too many capability checks
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
