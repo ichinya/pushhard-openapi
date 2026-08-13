@@ -76,6 +76,11 @@ components:
 
         updated_at: { type: string, format: date-time }
 
+        deployments:
+          type: array
+          description: Log-free deployment summaries; present when the relationship is loaded.
+          items: { $ref: '#/components/schemas/DeploymentSummary' }
+
     Server:
 
       type: object
@@ -103,6 +108,11 @@ components:
         created_at: { type: string, format: date-time }
 
         updated_at: { type: string, format: date-time }
+
+        deployments:
+          type: array
+          description: Log-free deployment summaries; present when the relationship is loaded.
+          items: { $ref: '#/components/schemas/DeploymentSummary' }
 
     ServerSummary:
 
@@ -785,9 +795,13 @@ components:
 
         error: { type: string, nullable: true }
 
-    Deployment:
+    DeploymentSummary:
 
       type: object
+
+      description: |
+        Log-free deployment representation used by lists, nested resources, and mutation responses.
+        Persisted deployment log content is available only through owner-authorized detail operations.
 
       properties:
 
@@ -817,8 +831,6 @@ components:
 
         error_message: { type: string, nullable: true }
 
-        log: { type: string, nullable: true }
-
         meta:
           type: object
           properties:
@@ -838,6 +850,24 @@ components:
         created_at: { type: string, format: date-time }
 
         updated_at: { type: string, format: date-time }
+
+    DeploymentDetail:
+
+      description: |
+        Owner-authorized deployment detail. Missing and inaccessible deployments use the same 404 response.
+
+      allOf:
+
+        - $ref: '#/components/schemas/DeploymentSummary'
+
+        - type: object
+
+          properties:
+
+            log:
+              type: string
+              nullable: true
+              description: Persisted deployment log; null when no persisted log is available.
 
     DeploymentStatus:
 
@@ -2326,6 +2356,8 @@ paths:
 
       summary: Деплои проекта (пагинированные)
 
+      description: Возвращает только доступные текущему пользователю deployments без поля `log`.
+
       security: [ { sanctum: [ ] } ]
 
       parameters:
@@ -2343,7 +2375,7 @@ paths:
                 properties:
                   data:
                     type: array
-                    items: { $ref: '#/components/schemas/Deployment' }
+                    items: { $ref: '#/components/schemas/DeploymentSummary' }
                   links: { type: object }
                   meta: { type: object }
 
@@ -2359,6 +2391,8 @@ paths:
 
       summary: Детали деплоя в контексте проекта
 
+      description: Возвращает persisted `log` только для deployment доступного текущему пользователю.
+
       security: [ { sanctum: [ ] } ]
 
       parameters:
@@ -2373,10 +2407,10 @@ paths:
           description: Деплой
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Deployment' }
+              schema: { $ref: '#/components/schemas/DeploymentDetail' }
 
         "404":
-          description: Деплой не найден или не принадлежит проекту
+          description: Деплой не найден или недоступен
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -2643,6 +2677,8 @@ paths:
 
       summary: Legacy trigger deploy
 
+      description: Создание и idempotent replay возвращают log-free deployment summary.
+
       security: [ { sanctum: [ ] } ]
 
       requestBody:
@@ -2661,11 +2697,17 @@ paths:
 
       responses:
 
+        "200":
+          description: Существующий deployment возвращён по idempotency key
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeploymentSummary' }
+
         "201":
           description: Деплой создан
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Deployment' }
+              schema: { $ref: '#/components/schemas/DeploymentSummary' }
 
   /deployments:
 
@@ -2678,6 +2720,8 @@ paths:
       tags: [ Deployments ]
 
       summary: Глобальный список деплоев (пагинированный)
+
+      description: Возвращает deployments только из доступных текущему пользователю проектов и без поля `log`.
 
       security: [ { sanctum: [ ] } ]
 
@@ -2714,7 +2758,7 @@ paths:
                 properties:
                   data:
                     type: array
-                    items: { $ref: '#/components/schemas/Deployment' }
+                    items: { $ref: '#/components/schemas/DeploymentSummary' }
                   links: { type: object }
                   meta: { type: object }
 
@@ -2730,6 +2774,8 @@ paths:
 
       summary: Детали деплоя (глобальный доступ)
 
+      description: Возвращает persisted `log` только для deployment доступного текущему пользователю.
+
       security: [ { sanctum: [ ] } ]
 
       parameters:
@@ -2742,10 +2788,10 @@ paths:
           description: Деплой
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Deployment' }
+              schema: { $ref: '#/components/schemas/DeploymentDetail' }
 
         "404":
-          description: Деплой не найден
+          description: Деплой не найден или недоступен
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -2762,6 +2808,8 @@ paths:
 
       summary: Повторить деплой
 
+      description: Возвращает log-free summary нового deployment.
+
       security: [ { sanctum: [ ] } ]
 
       parameters:
@@ -2774,7 +2822,7 @@ paths:
           description: Новый деплой создан (retry)
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Deployment' }
+              schema: { $ref: '#/components/schemas/DeploymentSummary' }
 
         "404":
           description: Деплой не найден
