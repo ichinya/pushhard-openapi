@@ -114,7 +114,7 @@ equal(
   ['probe_unavailable', 'probe_timeout'],
   'evaluation error code enum drifted',
 )
-invariant(probe.properties.available.maxItems === 4, 'probe inventory must be bounded')
+invariant(probe.properties.available.maxItems === 7, 'probe inventory must be bounded')
 invariant(evaluation.properties.required.maxItems === 4, 'required capabilities must be bounded')
 invariant(evaluation.properties.missing.maxItems === 4, 'missing capabilities must be bounded')
 invariant(evaluation.properties.install_hints.maxItems === 4, 'install hints must be bounded')
