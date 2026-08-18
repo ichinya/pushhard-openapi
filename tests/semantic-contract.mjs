@@ -44,7 +44,7 @@ const spec = JSON.parse(readFileSync(bundlePath, 'utf8'))
 const capabilityIds = schema(spec, 'ServerCapabilityId')
 equal(
   capabilityIds.enum,
-  ['git', 'docker_engine', 'docker_compose_v2', 'rsync'],
+  ['git', 'docker_engine', 'docker_compose_v2', 'rsync', 'php', 'composer', 'node'],
   'capability catalog must stay fixed and ordered',
 )
 
