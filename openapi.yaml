@@ -811,7 +811,7 @@ components:
 
       type: string
 
-      enum: [ git, docker_engine, docker_compose_v2, rsync ]
+      enum: [ git, docker_engine, docker_compose_v2, rsync, php, composer, node ]
 
     ServerCapabilityCheckContext:
 
@@ -872,7 +872,7 @@ components:
 
         available:
           type: array
-          maxItems: 4
+          maxItems: 7
           uniqueItems: true
           items:
             $ref: '#/components/schemas/ServerCapabilityId'
@@ -880,6 +880,13 @@ components:
         os_family:
           type: string
           enum: [ debian, alpine, rhel, unknown ]
+
+        versions:
+          type: object
+          description: Normalized tool versions keyed by capability id; present only for available tools.
+          additionalProperties:
+            type: string
+            maxLength: 64
 
         checked_at:
           type: string
