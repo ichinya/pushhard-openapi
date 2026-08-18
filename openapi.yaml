@@ -1376,6 +1376,40 @@ components:
 
 paths:
 
+  /meta:
+
+    get:
+
+      operationId: getMeta
+
+      tags: [ Meta ]
+
+      summary: Версия инсталляции
+
+      security: [ ]
+
+      responses:
+
+        '200':
+
+          description: Версия релиза из APP_VERSION.
+
+          content:
+
+            application/json:
+
+              schema:
+
+                type: object
+
+                additionalProperties: false
+
+                required: [ version ]
+
+                properties:
+
+                  version: { type: string, maxLength: 64, example: "0.4.0" }
+
   /auth/register:
 
     post:
