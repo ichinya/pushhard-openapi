@@ -44,7 +44,7 @@ const spec = JSON.parse(readFileSync(bundlePath, 'utf8'))
 const capabilityIds = schema(spec, 'ServerCapabilityId')
 equal(
   capabilityIds.enum,
-  ['git', 'docker_engine', 'docker_compose_v2', 'rsync'],
+  ['git', 'docker_engine', 'docker_compose_v2', 'rsync', 'php', 'composer', 'node'],
   'capability catalog must stay fixed and ordered',
 )
 
@@ -114,7 +114,7 @@ equal(
   ['probe_unavailable', 'probe_timeout'],
   'evaluation error code enum drifted',
 )
-invariant(probe.properties.available.maxItems === 4, 'probe inventory must be bounded')
+invariant(probe.properties.available.maxItems === 7, 'probe inventory must be bounded')
 invariant(evaluation.properties.required.maxItems === 4, 'required capabilities must be bounded')
 invariant(evaluation.properties.missing.maxItems === 4, 'missing capabilities must be bounded')
 invariant(evaluation.properties.install_hints.maxItems === 4, 'install hints must be bounded')
