@@ -1097,6 +1097,12 @@ components:
 
         external_id: { type: string }
 
+        source_revision: { type: string, pattern: '^[0-9a-f]{7,40}$', nullable: true, description: Deployed git commit. }
+
+        initiator_type: { type: string, enum: [ manual_ui, pat, webhook, schedule, retry, rollback ], nullable: true }
+
+        actor_display_name: { type: string, nullable: true, description: Safe actor reference (user name, PAT token name or provider · delivery); never a secret. }
+
         started_at: { type: string, format: date-time }
 
         finished_at: { type: string, format: date-time, nullable: true }
