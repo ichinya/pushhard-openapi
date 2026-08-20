@@ -248,7 +248,199 @@ components:
         - $ref: '#/components/schemas/DockerComposeRecipeOptions'
         - type: object
           additionalProperties: true
-          description: Existing recipe-specific options for laravel, php, node, and go.
+          description: Existing recipe-specific options for laravel, php, node, and go. Pre-deploy backup options are executed only by the Laravel recipe.
+          properties:
+
+            critical_changed_files:
+              type: array
+              maxItems: 100
+              description: Repository-relative fnmatch-style globs used by the automatic-deploy guard and manual/retry warning path.
+              items:
+                type: string
+                minLength: 1
+                maxLength: 255
+                pattern: '^[A-Za-z0-9._*?\[\]-]+(?:/[A-Za-z0-9._*?\[\]-]+)*/?$'
+
+            backup_policy:
+              $ref: '#/components/schemas/PreDeployBackupPolicy'
+
+            backup_type:
+              $ref: '#/components/schemas/PreDeployBackupType'
+
+            backup_retention_days:
+              type: integer
+              minimum: 1
+              maximum: 365
+              default: 14
+              description: Number of days to retain successful pre-deploy backup artifacts.
+
+            backup_database:
+              type: string
+              minLength: 1
+              maxLength: 128
+              pattern: '^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$'
+              description: MySQL database name or PostgreSQL service name. Passwords and connection URIs are forbidden.
+
+            backup_credentials_file:
+              type: string
+              minLength: 2
+              maxLength: 500
+              pattern: '^/[A-Za-z0-9._/-]+$'
+              description: Absolute target-host path to a MySQL defaults file or PostgreSQL service file. File contents are never returned or logged.
+
+            migration_policy:
+              $ref: '#/components/schemas/LaravelMigrationPolicy'
+
+            migration_down_command:
+              type: string
+              nullable: true
+              minLength: 1
+              maxLength: 2000
+              pattern: '^php artisan [A-Za-z0-9][A-Za-z0-9:_-]*(?: [A-Za-z0-9_./:@,+=-]+)*$'
+              description: |
+                Explicit Laravel recovery command used only by explicit-down-command. The command
+                must use the allowlisted `php artisan <command> [safe arguments]` form; shell
+                operators, substitutions, redirects, environment assignments, and control
+                characters are rejected. Command text is never copied into deployment metadata.
+
+    LaravelMigrationPolicy:
+
+      type: string
+
+      enum: [ none, backward-compatible, block-rollback, explicit-down-command ]
+
+      default: block-rollback
+
+      description: |
+        Laravel migration and rollback policy. none skips artisan:migrate; backward-compatible
+        runs migrations and permits code rollback; block-rollback runs migrations and blocks a
+        rollback when migrations were applied; explicit-down-command runs migrations and requires
+        the allowlisted migration_down_command before switching a release back.
+
+    LaravelMigrationExecutionResult:
+
+      type: object
+
+      description: Sanitized Laravel migration outcome. Raw Artisan output and command text are never persisted.
+
+      required: [ status ]
+
+      properties:
+
+        status: { type: string, enum: [ skipped, started, succeeded, failed ] }
+
+        pending_before:
+          type: boolean
+          nullable: true
+          description: Whether the pre-run status probe found pending migrations; null means the probe was inconclusive.
+
+        applied:
+          type: boolean
+          nullable: true
+          description: True when migrations were applied or may have been applied; inconclusive probes are handled fail-closed.
+
+        reason:
+          type: string
+          enum: [ policy_none, command_failed ]
+
+        started_at: { type: string, format: date-time }
+
+        finished_at: { type: string, format: date-time }
+
+    LaravelMigrationExecutionSummary:
+
+      type: object
+
+      description: Safe immutable Laravel migration configuration plus the sanitized runner result.
+
+      required: [ policy, runs_migrations, down_command_configured ]
+
+      properties:
+
+        policy: { $ref: '#/components/schemas/LaravelMigrationPolicy' }
+
+        runs_migrations: { type: boolean }
+
+        down_command_configured: { type: boolean }
+
+        down_command_hash:
+          type: string
+          nullable: true
+          pattern: '^[0-9a-f]{64}$'
+          description: SHA-256 identity of the validated recovery command; command text is omitted.
+
+        execution:
+          $ref: '#/components/schemas/LaravelMigrationExecutionResult'
+
+    PreDeployBackupPolicy:
+
+      type: string
+
+      enum: [ disabled, optional, required ]
+
+      default: disabled
+
+      description: Required blocks deployment when a verified backup cannot be created; optional records a safe failure and continues.
+
+    PreDeployBackupType:
+
+      type: string
+
+      enum: [ mysql, postgresql ]
+
+    PreDeployBackupExecutionSummary:
+
+      type: object
+
+      description: Safe backup configuration snapshot. Database and credential-file values are represented only by configured booleans.
+
+      required: [ policy, retention_days, database_configured, credentials_file_configured ]
+
+      properties:
+
+        policy: { $ref: '#/components/schemas/PreDeployBackupPolicy' }
+
+        type:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/PreDeployBackupType'
+
+        retention_days: { type: integer, minimum: 1, maximum: 365 }
+
+        database_configured: { type: boolean }
+
+        credentials_file_configured: { type: boolean }
+
+    PreDeployBackupResult:
+
+      type: object
+
+      description: Sanitized backup result persisted after runner execution. Credential material and raw command output are never included.
+
+      required: [ status ]
+
+      properties:
+
+        status: { type: string, enum: [ created, skipped, failed ] }
+
+        reason:
+          type: string
+          enum: [ policy_disabled, missing_configuration, missing_binary, credentials_unreadable, dump_failed, invalid_metadata ]
+
+        type: { $ref: '#/components/schemas/PreDeployBackupType' }
+
+        checksum:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+
+        size_bytes: { type: integer, minimum: 1 }
+
+        retention_days: { type: integer, minimum: 1, maximum: 365 }
+
+        storage_ref:
+          type: string
+          maxLength: 255
+          pattern: '^backups/pre-deploy/[A-Za-z0-9._-]+\.sql$'
 
     DockerComposeExecutionPlan:
 
@@ -331,6 +523,12 @@ components:
 
         rollback_supported: { type: boolean }
 
+        source_revision: { type: string, pattern: '^[0-9a-f]{7,40}$', nullable: true }
+
+        previous_source_revision: { type: string, pattern: '^[0-9a-f]{7,40}$', nullable: true }
+
+        release_name: { type: string, pattern: '^[A-Za-z0-9._-]{1,64}$' }
+
         compose:
           $ref: '#/components/schemas/DockerComposeExecutionPlan'
 
@@ -366,10 +564,21 @@ components:
               type: array
               items: { type: string }
 
+        backup:
+          $ref: '#/components/schemas/PreDeployBackupExecutionSummary'
+
+        pre_deploy_backup:
+          $ref: '#/components/schemas/PreDeployBackupResult'
+
+        migration:
+          $ref: '#/components/schemas/LaravelMigrationExecutionSummary'
+
         preflight:
           $ref: '#/components/schemas/DeploymentCapabilityPreflight'
 
-        keep_releases: { type: integer }
+        keep_releases: { type: integer, minimum: 1, maximum: 50 }
+
+        retention_removed_releases: { type: integer, minimum: 1 }
 
         resolved_at: { type: string, format: date-time }
 
@@ -1097,6 +1306,12 @@ components:
 
         external_id: { type: string }
 
+        source_revision: { type: string, pattern: '^[0-9a-f]{7,40}$', nullable: true, description: Deployed git commit. }
+
+        initiator_type: { type: string, enum: [ manual_ui, pat, webhook, schedule, retry, rollback ], nullable: true }
+
+        actor_display_name: { type: string, nullable: true, description: "Safe actor reference (user name, PAT token name or provider delivery id); never a secret." }
+
         started_at: { type: string, format: date-time }
 
         finished_at: { type: string, format: date-time, nullable: true }
@@ -1250,6 +1465,22 @@ components:
       properties:
 
         ok: { type: boolean }
+
+    DeploymentSwitchAccepted:
+
+      type: object
+
+      additionalProperties: false
+
+      required: [ id, status, message ]
+
+      properties:
+
+        id: { type: string, pattern: '^[0-9A-HJKMNP-TV-Z]{26}$' }
+
+        status: { type: string, enum: [ queued ] }
+
+        message: { type: string }
 
     Error:
 
@@ -3228,13 +3459,23 @@ paths:
 
         - $ref: '#/components/parameters/DeploymentId'
 
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                reason: { type: string, nullable: true, maxLength: 255 }
+
       responses:
 
-        "200":
-          description: Откат инициирован
+        "202":
+          description: Откат поставлен в очередь
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/OkResponse' }
+              schema: { $ref: '#/components/schemas/DeploymentSwitchAccepted' }
 
         "404":
           description: Деплой не найден
@@ -3242,8 +3483,142 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
 
+        "409":
+          description: Для этого проекта, сервера и окружения уже выполняется деплой.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
         "422":
-          description: Rollback is unsupported for this deployment recipe, including docker_compose.
+          description: Исходный деплой или release не подходит, migration recovery заблокирован, либо recipe не поддерживает rollback.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /projects/{project}/releases:
+
+    get:
+
+      operationId: listProjectReleases
+
+      x-required-ability: read
+
+      tags: [ Deployments ]
+
+      summary: Активируемые релизы биндинга с текущим маркером и diff-контекстом
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/ProjectId'
+
+        - name: server_id
+
+          in: query
+
+          required: true
+
+          schema: { type: string, pattern: '^[0-9A-HJKMNP-TV-Z]{26}$' }
+
+        - name: stage
+
+          in: query
+
+          required: true
+
+          schema: { type: string, enum: [ dev, staging, prod ] }
+
+      responses:
+
+        "200":
+          description: Список успешных деплоев с зафиксированными release-каталогами.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ data ]
+                properties:
+                  data:
+                    type: array
+                    maxItems: 20
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [ deployment_id, release_name, is_current ]
+                      properties:
+                        deployment_id: { type: string, pattern: '^[0-9A-HJKMNP-TV-Z]{26}$' }
+                        release_name: { type: string, maxLength: 64 }
+                        source_revision: { type: string, pattern: '^[0-9a-f]{7,40}$', nullable: true }
+                        finished_at: { type: string, format: date-time, nullable: true }
+                        created_at: { type: string, format: date-time, nullable: true }
+                        is_current: { type: boolean }
+
+        "404":
+          description: Проект не найден
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "422":
+          description: Ошибочные фильтры server_id/stage
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /projects/{project}/releases/{deployment}/activate:
+
+    post:
+
+      operationId: activateProjectRelease
+
+      x-required-ability: deploy
+
+      tags: [ Deployments ]
+
+      summary: Активировать конкретный исторический release
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/ProjectId'
+
+        - $ref: '#/components/parameters/DeploymentId'
+
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                reason: { type: string, maxLength: 255 }
+
+      responses:
+
+        "202":
+          description: Активация поставлена в очередь
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeploymentSwitchAccepted' }
+
+        "404":
+          description: Проект или деплой не найден
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "409":
+          description: Для этого проекта, сервера и окружения уже выполняется деплой.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "422":
+          description: Выбран неуспешный деплой, release не зафиксирован, либо migration recovery заблокирован.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
