@@ -3254,6 +3254,128 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
 
+  /projects/{project}/releases:
+
+    get:
+
+      operationId: listProjectReleases
+
+      x-required-ability: read
+
+      tags: [ Deployments ]
+
+      summary: Активируемые релизы биндинга с текущим маркером и diff-контекстом
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/ProjectId'
+
+        - name: server_id
+
+          in: query
+
+          required: true
+
+          schema: { type: string, pattern: '^[0-9A-HJKMNP-TV-Z]{26}$' }
+
+        - name: stage
+
+          in: query
+
+          required: true
+
+          schema: { type: string, enum: [ dev, staging, prod ] }
+
+      responses:
+
+        "200":
+          description: Список успешных деплоев с зафиксированными release-каталогами.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ data ]
+                properties:
+                  data:
+                    type: array
+                    maxItems: 20
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [ deployment_id, release_name, is_current ]
+                      properties:
+                        deployment_id: { type: string, pattern: '^[0-9A-HJKMNP-TV-Z]{26}$' }
+                        release_name: { type: string, maxLength: 64 }
+                        source_revision: { type: string, pattern: '^[0-9a-f]{7,40}$', nullable: true }
+                        finished_at: { type: string, format: date-time, nullable: true }
+                        created_at: { type: string, format: date-time, nullable: true }
+                        is_current: { type: boolean }
+
+        "404":
+          description: Проект не найден
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "422":
+          description: Ошибочные фильтры server_id/stage
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /projects/{project}/releases/{deployment}/activate:
+
+    post:
+
+      operationId: activateProjectRelease
+
+      x-required-ability: deploy
+
+      tags: [ Deployments ]
+
+      summary: Активировать конкретный исторический release
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/ProjectId'
+
+        - $ref: '#/components/parameters/DeploymentId'
+
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                reason: { type: string, maxLength: 255 }
+
+      responses:
+
+        "202":
+          description: Активация поставлена в очередь
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OkResponse' }
+
+        "404":
+          description: Проект или деплой не найден
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "422":
+          description: Выбран неуспешный деплой или release не зафиксирован (в т.ч. удалён retention).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   # Public webhook receivers — also available from the root (web.php) for
   # proxies that only forward /api/*. No auth; signed payloads.
   /webhook/deploy/{project}/{token}:
