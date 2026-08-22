@@ -341,7 +341,7 @@ components:
 
         reason:
           type: string
-          enum: [ policy_none, command_failed ]
+          enum: [ policy_none, preflight_failed, command_failed ]
 
         started_at: { type: string, format: date-time }
 
@@ -425,7 +425,7 @@ components:
 
         reason:
           type: string
-          enum: [ policy_disabled, missing_configuration, missing_binary, credentials_unreadable, dump_failed, invalid_metadata ]
+          enum: [ policy_disabled, missing_configuration, missing_binary, credentials_unreadable, storage_unavailable, insufficient_storage, dump_failed, invalid_metadata ]
 
         type: { $ref: '#/components/schemas/PreDeployBackupType' }
 
@@ -441,6 +441,36 @@ components:
           type: string
           maxLength: 255
           pattern: '^backups/pre-deploy/[A-Za-z0-9._-]+\.sql$'
+
+    BackupRestoreResult:
+
+      type: object
+
+      description: Sanitized audit state for a separately confirmed database restore. Raw adapter output and credentials are never included.
+
+      required: [ status ]
+
+      properties:
+
+        status: { type: string, enum: [ queued, started, succeeded, failed ] }
+
+        reason:
+          type: string
+          enum: [ invalid_request, missing_binary, credentials_unreadable, artifact_missing, checksum_mismatch, restore_failed ]
+
+        source_deployment_id: { type: string, pattern: '^[0-9A-HJKMNP-TV-Z]{26}$' }
+
+        type: { $ref: '#/components/schemas/PreDeployBackupType' }
+
+        checksum: { type: string, pattern: '^[0-9a-f]{64}$' }
+
+        size_bytes: { type: integer, minimum: 1 }
+
+        storage_ref: { type: string, pattern: '^backups/pre-deploy/[A-Za-z0-9._-]+\.sql$' }
+
+        started_at: { type: string, format: date-time }
+
+        finished_at: { type: string, format: date-time }
 
     DockerComposeExecutionPlan:
 
@@ -523,7 +553,21 @@ components:
 
         rollback_supported: { type: boolean }
 
-        source_revision: { type: string, pattern: '^[0-9a-f]{7,40}$', nullable: true }
+        config_revision: { type: string, pattern: '^[0-9a-f]{64}$', description: Secret-free deterministic binding configuration revision used by release-switch compatibility gates. }
+
+        env_revision: { $ref: '#/components/schemas/ManagedEnvRevision' }
+
+        build_env_revision: { $ref: '#/components/schemas/ManagedEnvRevision' }
+
+        source_ref: { type: string, maxLength: 512, nullable: true }
+
+        source_revision: { type: string, pattern: '^[0-9a-f]{40}$', nullable: true }
+
+        commit_time: { type: string, format: date-time, nullable: true }
+
+        build_started_at: { type: string, format: date-time, nullable: true }
+
+        artifact_revision: { type: string, pattern: '^[0-9a-f]{40}$', nullable: true }
 
         previous_source_revision: { type: string, pattern: '^[0-9a-f]{7,40}$', nullable: true }
 
@@ -569,6 +613,9 @@ components:
 
         pre_deploy_backup:
           $ref: '#/components/schemas/PreDeployBackupResult'
+
+        restore:
+          $ref: '#/components/schemas/BackupRestoreResult'
 
         migration:
           $ref: '#/components/schemas/LaravelMigrationExecutionSummary'
@@ -1300,17 +1347,19 @@ components:
 
         status: { type: string, enum: [ queued, running, success, failed, cancelled ] }
 
-        trigger: { type: string, enum: [ api, webhook, manual ] }
+        trigger: { type: string, enum: [ api, webhook, manual, schedule, retry, rollback, restore ] }
 
         provider: { type: string }
 
         external_id: { type: string }
 
-        source_revision: { type: string, pattern: '^[0-9a-f]{7,40}$', nullable: true, description: Deployed git commit. }
+        source_revision: { type: string, pattern: '^[0-9a-f]{40}$', nullable: true, description: Immutable deployed git commit. }
 
-        initiator_type: { type: string, enum: [ manual_ui, pat, webhook, schedule, retry, rollback ], nullable: true }
+        initiator_type: { type: string, enum: [ manual_ui, pat, webhook, schedule, retry, rollback, restore ], nullable: true }
 
-        actor_display_name: { type: string, nullable: true, description: "Safe actor reference (user name, PAT token name or provider delivery id); never a secret." }
+        actor_token_id: { type: integer, nullable: true, description: Safe Sanctum token database id for PAT attribution; never token plaintext or hash. }
+
+        actor_display_name: { type: string, nullable: true, description: "Safe actor reference (user name, PAT token name or provider delivery id); retry and rollback identify the current authenticated operator, never the source actor or a secret." }
 
         started_at: { type: string, format: date-time }
 
@@ -1489,6 +1538,21 @@ components:
       properties:
 
         message: { type: string }
+
+        manual_action_required:
+          type: boolean
+          description: True when an operator must use a reviewed recovery or maintenance flow instead of retrying automatically.
+
+        disabled_reason:
+          type: string
+          maxLength: 64
+          description: Bounded machine-readable reason for a fail-closed operation.
+
+        errors:
+          type: object
+          additionalProperties:
+            type: array
+            items: { type: string }
 
     User:
 
@@ -2885,6 +2949,72 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ValidationError' }
 
+  /projects/{project}/deployment-variables/preview:
+
+    post:
+
+      operationId: previewProjectDeploymentVariables
+
+      x-required-ability: admin
+
+      tags: [ Deployments ]
+
+      summary: Preview allowlisted system variables without exposing literal secrets
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/ProjectId'
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [ template ]
+              properties:
+                template: { type: string, maxLength: 65535 }
+
+      responses:
+
+        "200":
+          description: Safe preview; literal values are masked and shell execution is never performed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ context, preview, errors, warning ]
+                properties:
+                  context: { type: object, additionalProperties: { type: string, nullable: true } }
+                  preview:
+                    type: array
+                    items:
+                      type: object
+                      required: [ key, value, masked ]
+                      properties:
+                        key: { type: string }
+                        value: { type: string, nullable: true }
+                        masked: { type: boolean }
+                  errors:
+                    type: array
+                    items: { type: object, additionalProperties: true }
+                  warning: { type: string }
+
+        "404":
+          description: Project not found or inaccessible
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "422":
+          description: Invalid template or source ref cannot be resolved safely
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ValidationError' }
+
   /projects/{project}/deployments:
 
     get:
@@ -3419,7 +3549,7 @@ paths:
 
       summary: Повторить деплой
 
-      description: Возвращает log-free summary нового deployment.
+      description: Возвращает log-free summary нового deployment. Повторяет только зафиксированный immutable full commit SHA и записывает текущего authenticated operator.
 
       security: [ { sanctum: [ ] } ]
 
@@ -3437,6 +3567,18 @@ paths:
 
         "404":
           description: Деплой не найден
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "409":
+          description: Для binding уже есть активный deployment.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "422":
+          description: Binding недоступен или source deployment не содержит immutable full commit SHA.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -3460,14 +3602,17 @@ paths:
         - $ref: '#/components/parameters/DeploymentId'
 
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema:
               type: object
               additionalProperties: false
+              required: [ confirmed, reason ]
               properties:
-                reason: { type: string, nullable: true, maxLength: 255 }
+                confirmed: { type: boolean, enum: [ true ] }
+                reason: { type: string, minLength: 1, maxLength: 255 }
+                confirm_destructive_migration: { type: boolean, default: false }
 
       responses:
 
@@ -3490,10 +3635,80 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
 
         "422":
-          description: Исходный деплой или release не подходит, migration recovery заблокирован, либо recipe не поддерживает rollback.
+          description: Confirmation/reason missing, source/release is unsuitable, migration recovery requires manual action, recipe lacks a safe post-switch contract, or current/target snapshots do not match the live binding.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+
+        "503":
+          description: Remote release inventory is unavailable; rollback fails closed without queueing work.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /deployments/{deployment}/restore:
+
+    post:
+
+      operationId: restoreDeploymentBackup
+
+      x-required-ability: admin
+
+      tags: [ Deployments ]
+
+      summary: Restore a verified pre-deploy database backup as a separate audited operation
+
+      description: Requires the exact phrase `RESTORE <deployment-id>`. Restore never runs implicitly as part of rollback.
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/DeploymentId'
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [ confirmation, reason ]
+              properties:
+                confirmation: { type: string, minLength: 34, maxLength: 34, pattern: '^RESTORE [0-9A-HJKMNP-TV-Z]{26}$' }
+                reason: { type: string, minLength: 1, maxLength: 255 }
+
+      responses:
+
+        "202":
+          description: Separate restore audit deployment queued
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeploymentSwitchAccepted' }
+
+        "403":
+          description: Admin ability required
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "404":
+          description: Source deployment not found or inaccessible
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "409":
+          description: Another operation is active for this project/server/stage binding
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "422":
+          description: Confirmation is invalid, backup evidence is invalid, or current database binding does not match
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ValidationError' }
 
   /projects/{project}/releases:
 
@@ -3546,14 +3761,24 @@ paths:
                     items:
                       type: object
                       additionalProperties: false
-                      required: [ deployment_id, release_name, is_current ]
+                      required: [ deployment_id, release_name, status, is_current, available, can_activate, requires_destructive_migration_confirmation ]
                       properties:
                         deployment_id: { type: string, pattern: '^[0-9A-HJKMNP-TV-Z]{26}$' }
                         release_name: { type: string, maxLength: 64 }
-                        source_revision: { type: string, pattern: '^[0-9a-f]{7,40}$', nullable: true }
+                        source_revision: { type: string, pattern: '^[0-9a-f]{40}$', nullable: true }
                         finished_at: { type: string, format: date-time, nullable: true }
                         created_at: { type: string, format: date-time, nullable: true }
+                        status: { type: string, enum: [ queued, running, success, failed, cancelled ] }
                         is_current: { type: boolean }
+                        available: { type: boolean }
+                        can_activate: { type: boolean }
+                        requires_destructive_migration_confirmation:
+                          type: boolean
+                          description: Derived from the real remote current deployment, not from the historical activation target.
+                        disabled_reason:
+                          type: string
+                          nullable: true
+                          enum: [ deployment_not_successful, deploy_path_invalid, inventory_unavailable, inventory_timeout, inventory_invalid, current_release_unknown, current_release_unrecorded, release_missing, already_current, rollback_unsupported, release_compatibility_unknown, release_environment_mismatch, release_configuration_mismatch ]
 
         "404":
           description: Проект не найден
@@ -3588,14 +3813,17 @@ paths:
         - $ref: '#/components/parameters/DeploymentId'
 
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema:
               type: object
               additionalProperties: false
+              required: [ confirmed, reason ]
               properties:
-                reason: { type: string, maxLength: 255 }
+                confirmed: { type: boolean, enum: [ true ] }
+                reason: { type: string, minLength: 1, maxLength: 255 }
+                confirm_destructive_migration: { type: boolean, default: false }
 
       responses:
 
@@ -3618,7 +3846,13 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
 
         "422":
-          description: Выбран неуспешный деплой, release не зафиксирован, либо migration recovery заблокирован.
+          description: Выбран неуспешный deployment, release/current inventory не доказан, migration recovery заблокирован, post-switch contract отсутствует, либо current/target compatibility snapshot не совпадает с live binding.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "503":
+          description: Remote release inventory недоступен; активация завершается fail-closed без постановки job в очередь.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -3654,6 +3888,8 @@ paths:
 
         "400": { description: Bad request }
 
+        "422": { description: Immutable source snapshot or critical-files comparison could not be established; no deploy is queued. }
+
     post:
 
       operationId: receiveDeployWebhookPost
@@ -3681,6 +3917,8 @@ paths:
 
         "400": { description: Bad request }
 
+        "422": { description: Configured ref could not be resolved to an immutable full commit SHA; no deploy is queued. }
+
   /webhook/github/{project}:
 
     post:
@@ -3695,7 +3933,8 @@ paths:
 
       description: |
         Verifies X-Hub-Signature-256 HMAC header against the project's
-        GitHub webhook secret. Throttled 30/мин.
+        GitHub webhook secret. A non-zero full 40-character `after` SHA is
+        required before dispatch. Throttled 30/мин.
 
       parameters:
 
@@ -3710,6 +3949,8 @@ paths:
         "400": { description: Bad request }
 
         "401": { description: Bad signature }
+
+        "422": { description: Immutable source snapshot or critical-files comparison failed closed; no deploy is queued. }
 
   /webhook/gitlab/{project}:
 
@@ -3725,7 +3966,10 @@ paths:
 
       description: |
         Verifies webhook-signature (whsec_ ed25519) or X-Gitlab-Token against
-        the project's GitLab webhook secret. Throttled 30/мин.
+        the project's GitLab webhook secret. A non-zero full 40-character
+        `after` SHA is required. Compare requests use only the configured HTTPS
+        repository origin with public pinned DNS and redirects disabled; the
+        payload cannot select the credential target. Throttled 30/мин.
 
       parameters:
 
@@ -3740,3 +3984,5 @@ paths:
         "400": { description: Bad request }
 
         "401": { description: Bad signature }
+
+        "422": { description: Immutable source snapshot or trusted critical-files comparison failed closed; no deploy is queued. }
