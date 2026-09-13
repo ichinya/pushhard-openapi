@@ -765,6 +765,28 @@ components:
 
         current_revision: { $ref: '#/components/schemas/ManagedEnvRevision' }
 
+        binding_id:
+
+          type: integer
+
+          description: Numeric pivot id of the project-server binding this conflict belongs to.
+
+        server:
+
+          type: object
+
+          additionalProperties: false
+
+          description: Public identity of the bound server, when it can be resolved.
+
+          properties:
+
+            public_id: { type: string, pattern: '^[0-9A-HJKMNP-TV-Z]{26}$' }
+
+            name: { type: string }
+
+            host: { type: string }
+
     ManagedEnvValidationError:
 
       type: object
