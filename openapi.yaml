@@ -24,6 +24,11 @@ info:
     membership role ∩ PAT abilities; session ограничена ролью без ceiling,
     PAT '*' снимает только ability ceiling, но не роль.
 
+    Приглашения (D5), safe audit (D6) и transfer-запрет (D4) входят в
+    workspace-контракт этого spec. SSE stream остаётся HTTP surface
+    (routes/web.php) и MCP tool не является; его authorization contract —
+    в docs/sse.md отдельно от OpenAPI paths.
+
   version: 2.0.0
 
 servers:
@@ -53,6 +58,10 @@ tags:
   - name: Workspaces
 
   - name: WorkspaceMembers
+
+  - name: Invitations
+
+  - name: WorkspaceAudit
 
 components:
 
@@ -1858,6 +1867,161 @@ components:
             - personal_workspace_restricted
             - workspace_selector_conflict
             - member_not_found
+            - invitation_not_found
+            - invitation_not_pending
+            - invitation_email_mismatch
+            - membership_exists
+
+    Invitation:
+
+      type: object
+
+      description: |
+        Приглашение (public view). Raw invitation token никогда не
+        возвращается API — он доставляется только получателю через
+        защищённый канал, в DB хранится только digest. Resend создаёт
+        новую generation и инвалидирует предыдущий token; expires_at —
+        TTL 7 суток от выпуска текущей generation. Pending-приглашение
+        уникально на пару workspace+normalized email; accepted/
+        expired/revoked/declined — terminal transitions. Приглашение
+        существующему member роль не меняет.
+
+      additionalProperties: false
+
+      required: [ id, workspace_id, email, role, status, expires_at, created_at ]
+
+      properties:
+
+        id:
+          type: string
+          pattern: '^[0-9A-HJKMNP-TV-Z]{26}$'
+          description: PublicId (ULID) invitation
+
+        workspace_id:
+          type: string
+          pattern: '^[0-9A-HJKMNP-TV-Z]{26}$'
+          description: PublicId (ULID) workspace
+
+        email: { type: string, format: email }
+
+        role:
+          $ref: '#/components/schemas/WorkspaceRole'
+
+        status:
+          type: string
+          enum: [ pending, accepted, expired, revoked, declined ]
+
+        expires_at: { type: string, format: date-time }
+
+        accepted_at: { type: string, format: date-time, nullable: true }
+
+        created_at: { type: string, format: date-time }
+
+    InvitationCreateRequest:
+
+      type: object
+
+      description: |
+        Создание приглашения. Admission получателя (D5) — authenticated
+        identity с подтверждённым совпадающим email; token не позволяет
+        назначить произвольного user_id. Повторный вызов с тем же email
+        при активном pending — идемпотентный replay (200) без повторной
+        отправки письма.
+
+      additionalProperties: false
+
+      required: [ email, role ]
+
+      properties:
+
+        email: { type: string, format: email, maxLength: 255 }
+
+        role:
+          $ref: '#/components/schemas/WorkspaceRole'
+
+    WorkspaceAuditEvent:
+
+      type: object
+
+      description: |
+        Событие domain audit — только allowlist-поля: actor type/id,
+        action, workspace/resource public ID, timestamp, safe field-level
+        diff. Email, invitation token, hash и tokenized URL запрещены.
+        Retention — 90 суток по умолчанию (retained_until), оператор может
+        расширить срок; события удаления сохраняют tombstone identifiers.
+        Denied mutation не создаёт domain audit event.
+
+      additionalProperties: false
+
+      required: [ id, actor_type, action, workspace_id, occurred_at, retained_until ]
+
+      properties:
+
+        id:
+          type: string
+          pattern: '^[0-9A-HJKMNP-TV-Z]{26}$'
+          description: PublicId (ULID) audit event
+
+        actor_type:
+          type: string
+          enum: [ user, system ]
+
+        actor_id: { type: integer, nullable: true, description: "null для system actor (например, expiry job)" }
+
+        action:
+          type: string
+          maxLength: 64
+          description: Событие домена в форме domain.action (например workspace.renamed, invitation.accepted).
+
+        workspace_id:
+          type: string
+          pattern: '^[0-9A-HJKMNP-TV-Z]{26}$'
+          description: PublicId (ULID) workspace
+
+        resource_type:
+          type: string
+          nullable: true
+          enum: [ workspace, membership, invitation, project, server, binding, deployment ]
+
+        resource_id:
+          type: string
+          nullable: true
+          pattern: '^[0-9A-HJKMNP-TV-Z]{26}$'
+          description: PublicId (ULID) ресурса; tombstone для удалённых
+
+        occurred_at: { type: string, format: date-time }
+
+        retained_until: { type: string, format: date-time }
+
+        diff:
+          type: object
+          nullable: true
+          description: Safe field-level diff; ключи — allowlist полей домена, значения ограничены и не содержат secrets/email/token/hash/URL.
+          additionalProperties:
+            type: object
+            additionalProperties: false
+            required: [ from, to ]
+            properties:
+              from: { type: string, nullable: true, maxLength: 255 }
+              to: { type: string, nullable: true, maxLength: 255 }
+
+    WorkspaceAuditPage:
+
+      type: object
+
+      description: Пагинированная страница audit (bounded); экспорт — отдельный NDJSON stream с повторной authority-проверкой каждого chunk.
+
+      required: [ data, links, meta ]
+
+      properties:
+
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/WorkspaceAuditEvent' }
+
+        links: { type: object }
+
+        meta: { type: object }
 
   parameters:
 
@@ -1925,6 +2089,19 @@ components:
         type: string
         pattern: '^[0-9A-HJKMNP-TV-Z]{26}$'
         description: PublicId (ULID) membership
+
+    InvitationId:
+
+      name: invitation
+
+      in: path
+
+      required: true
+
+      schema:
+        type: string
+        pattern: '^[0-9A-HJKMNP-TV-Z]{26}$'
+        description: PublicId (ULID) invitation
 
     WorkspaceSelector:
 
@@ -4856,6 +5033,513 @@ paths:
 
         "409":
           description: Personal owner либо последний Admin
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+  /workspaces/{workspace}/invitations:
+
+    post:
+
+      operationId: createWorkspaceInvitation
+
+      x-required-ability: admin
+
+      x-required-roles: [ admin ]
+
+      tags: [ Invitations ]
+
+      summary: Создать приглашение
+
+      description: |
+        Только Admin. Raw token не возвращается: он доставляется только
+        получателю (email) через защищённый канал; в DB — только digest.
+        TTL 7 суток. Повторный вызов с тем же normalized email при
+        активном pending — идемпотентный replay без повторного письма.
+        Приглашение существующему member не создаётся (409) и его роль
+        не меняет. Throttling per actor/workspace/recipient fingerprint —
+        safe 429.
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/WorkspaceId'
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InvitationCreateRequest' }
+
+      responses:
+
+        "201":
+          description: Приглашение создано (token доставляется только получателю; в ответе token отсутствует)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Invitation' }
+
+        "200":
+          description: Идемпотентный replay — существующее pending-приглашение возвращено без изменений
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Invitation' }
+
+        "401":
+          description: Неавторизован
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "403":
+          description: Недостаточная роль (только Admin) или способности PAT
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "404":
+          description: Workspace отсутствует или нет membership
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "409":
+          description: Получатель уже member (membership_exists)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "422":
+          description: Ошибка валидации
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ValidationError' }
+
+        "429":
+          description: Превышен throttling приглашений
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+    get:
+
+      operationId: listWorkspaceInvitations
+
+      x-required-ability: admin
+
+      x-required-roles: [ admin ]
+
+      tags: [ Invitations ]
+
+      summary: Список приглашений workspace
+
+      description: |
+        Только Admin. Raw token и его digest никогда не раскрываются —
+        только state/expiry. Чужой workspace — safe 404.
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/WorkspaceId'
+
+      responses:
+
+        "200":
+          description: Приглашения workspace (без tokens)
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Invitation' }
+
+        "401":
+          description: Неавторизован
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "403":
+          description: Недостаточная роль (только Admin) или способности PAT
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "404":
+          description: Workspace отсутствует или нет membership
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+  /workspaces/{workspace}/invitations/{invitation}/resend:
+
+    post:
+
+      operationId: resendWorkspaceInvitation
+
+      x-required-ability: admin
+
+      x-required-roles: [ admin ]
+
+      tags: [ Invitations ]
+
+      summary: Перевыпустить pending-приглашение
+
+      description: |
+        Только Admin, только pending (иначе 409). Создаёт новую
+        generation: предыдущий token инвалидируется, expires_at
+        продлевается на TTL 7 суток, письмо доставляется получателю.
+        Raw token в ответе отсутствует. Throttling — safe 429.
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/WorkspaceId'
+
+        - $ref: '#/components/parameters/InvitationId'
+
+      responses:
+
+        "200":
+          description: Новая generation выпущена (без token в ответе)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Invitation' }
+
+        "401":
+          description: Неавторизован
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "403":
+          description: Недостаточная роль (только Admin) или способности PAT
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "404":
+          description: Workspace или приглашение отсутствуют
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "409":
+          description: Приглашение не в pending (accepted/expired/revoked/declined)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "429":
+          description: Превышен throttling
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+  /workspaces/{workspace}/invitations/{invitation}/revoke:
+
+    post:
+
+      operationId: revokeWorkspaceInvitation
+
+      x-required-ability: admin
+
+      x-required-roles: [ admin ]
+
+      tags: [ Invitations ]
+
+      summary: Отозвать pending-приглашение
+
+      description: |
+        Только Admin. Отзыв — terminal transition: предыдущий token
+        инвалидируется, membership по нему никогда не создаётся.
+        Повторный revoke не-pending — 409. Потеря inviter management
+        authority отзывает pending-приглашения системно (stale Admin
+        invitation не создаёт нового Admin).
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/WorkspaceId'
+
+        - $ref: '#/components/parameters/InvitationId'
+
+      responses:
+
+        "200":
+          description: Приглашение отозвано (без token в ответе)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Invitation' }
+
+        "401":
+          description: Неавторизован
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "403":
+          description: Недостаточная роль (только Admin) или способности PAT
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "404":
+          description: Workspace или приглашение отсутствуют
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "409":
+          description: Приглашение не в pending
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+  /invitations/{invitation}/accept:
+
+    post:
+
+      operationId: acceptInvitation
+
+      x-required-ability: admin
+
+      tags: [ Invitations ]
+
+      summary: Принять приглашение получателем
+
+      description: |
+        Recipient self-service вне membership: селектор workspace не
+        нужен и не принимается (заголовок, конфликтующий с приглашением,
+        — 409). Admission (D5): authenticated identity с подтверждённым
+        совпадающим email; token не позволяет назначить произвольного
+        user_id; unverified email — отказ. Роль проверяется на момент
+        acceptance по принятой policy. Unknown/expired/revoked/declined
+        дают одинаковый safe 404 без раскрытия существования. Replay
+        того же получателя — safe 200 уже-принятого без повторной
+        membership/mail/audit. Ceiling admin: acceptance повышает
+        доступ, read-only PAT не принимает приглашения. Throttling —
+        safe 429.
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/InvitationId'
+
+      responses:
+
+        "201":
+          description: Membership создана (ровно один раз; audit, mail после commit)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceMember' }
+
+        "200":
+          description: Уже принято тем же получателем (safe replay)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceMember' }
+
+        "401":
+          description: Неавторизован
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "403":
+          description: Identity/email mismatch либо unverified email
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "404":
+          description: Неизвестное, чужое, expired/revoked/declined приглашение — одинаковый safe envelope
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "429":
+          description: Превышен throttling acceptance
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+  /invitations/{invitation}/decline:
+
+    post:
+
+      operationId: declineInvitation
+
+      x-required-ability: read
+
+      tags: [ Invitations ]
+
+      summary: Отклонить приглашение получателем
+
+      description: |
+        Recipient self-service, доступ не повышает. Отклонение —
+        terminal transition; повторный вызов идемпотентен (204).
+        Unknown/чужое/expired/revoked/accepted — одинаковый safe 404.
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/InvitationId'
+
+      responses:
+
+        "204":
+          description: Приглашение отклонено (идемпотентно)
+
+        "401":
+          description: Неавторизован
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "403":
+          description: Identity/email mismatch
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "404":
+          description: Неизвестное, чужое или terminal-приглашение — safe envelope
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+  /workspaces/{workspace}/audit:
+
+    get:
+
+      operationId: listWorkspaceAudit
+
+      x-required-ability: read
+
+      x-required-roles: [ admin, devops ]
+
+      tags: [ WorkspaceAudit ]
+
+      summary: Safe audit workspace (пагинированный)
+
+      description: |
+        Admin — полный safe workspace view; DevOps — ограниченный
+        resource/deployment view без membership/email/diffs; Viewer —
+        403; чужой workspace — safe 404 для любой роли. Только
+        allowlist-поля (D6): без email/token/hash/URL. Denied вызов
+        не пишет domain audit. Retention — 90 суток по умолчанию
+        (retained_until).
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/WorkspaceId'
+
+        - name: page
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, default: 1 }
+
+        - name: per_page
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+
+      responses:
+
+        "200":
+          description: Пагинированная страница audit
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceAuditPage' }
+
+        "401":
+          description: Неавторизован
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "403":
+          description: Недостаточная роль (Admin/DevOps; Viewer и DevOps export — deny) или способности PAT
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "404":
+          description: Workspace отсутствует или нет membership
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+  /workspaces/{workspace}/audit/export:
+
+    get:
+
+      operationId: exportWorkspaceAudit
+
+      x-required-ability: admin
+
+      x-required-roles: [ admin ]
+
+      tags: [ WorkspaceAudit ]
+
+      summary: Экспорт audit (bounded NDJSON stream)
+
+      description: |
+        Только Admin (DevOps export — deny). Bounded stream JSONL:
+        каждый chunk проходит повторную authority-проверку; после
+        revoke/downgrade/archive новые bytes не выдаются (D2 deadline
+        ≤5s), уже отправленные не отзываются ретроактивно. Только
+        allowlist-поля, без raw secrets. Отмена экспорта прекращает
+        новые chunks.
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/WorkspaceId'
+
+        - name: cursor
+          in: query
+          required: false
+          schema: { type: string, maxLength: 64, description: Opaque-курсор пагинации экспорта }
+
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 100 }
+
+      responses:
+
+        "200":
+          description: Bounded NDJSON stream событий (по одному JSON-объекту на строку)
+          content:
+            application/x-ndjson:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/WorkspaceAuditEvent' }
+
+        "401":
+          description: Неавторизован
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "403":
+          description: Недостаточная роль (только Admin; DevOps export — deny) или способности PAT
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "404":
+          description: Workspace отсутствует или нет membership
           content:
             application/json:
               schema: { $ref: '#/components/schemas/WorkspaceError' }

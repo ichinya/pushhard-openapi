@@ -294,6 +294,10 @@ invariant(
       'personal_workspace_restricted',
       'workspace_selector_conflict',
       'member_not_found',
+      'invitation_not_found',
+      'invitation_not_pending',
+      'invitation_email_mismatch',
+      'membership_exists',
     ]),
   'workspace error code catalog drifted',
 )
@@ -323,6 +327,19 @@ const managementOps = [
   ['changeWorkspaceMemberRole', '/workspaces/{workspace}/members/{member}', 'patch', 'admin', ['admin']],
   ['removeWorkspaceMember', '/workspaces/{workspace}/members/{member}', 'delete', 'admin', ['admin']],
   ['leaveWorkspace', '/workspaces/{workspace}/leave', 'post', 'read', ['admin', 'devops', 'viewer']],
+  ['createWorkspaceInvitation', '/workspaces/{workspace}/invitations', 'post', 'admin', ['admin']],
+  ['listWorkspaceInvitations', '/workspaces/{workspace}/invitations', 'get', 'admin', ['admin']],
+  ['resendWorkspaceInvitation', '/workspaces/{workspace}/invitations/{invitation}/resend', 'post', 'admin', ['admin']],
+  ['revokeWorkspaceInvitation', '/workspaces/{workspace}/invitations/{invitation}/revoke', 'post', 'admin', ['admin']],
+  ['listWorkspaceAudit', '/workspaces/{workspace}/audit', 'get', 'read', ['admin', 'devops']],
+  ['exportWorkspaceAudit', '/workspaces/{workspace}/audit/export', 'get', 'admin', ['admin']],
+]
+
+// Recipient self-service outside membership: no workspace selector at all;
+// acceptance raises access, so the conservative PAT ceiling is admin.
+const recipientOps = [
+  ['acceptInvitation', '/invitations/{invitation}/accept', 'post', 'admin'],
+  ['declineInvitation', '/invitations/{invitation}/decline', 'post', 'read'],
 ]
 
 const specOperationIds = new Set()
@@ -337,10 +354,12 @@ for (const [operationId, path, method, ability, roles] of managementOps) {
   invariant(op, `workspace management operation is missing: ${path} ${method}`)
   invariant(op.operationId === operationId, `operationId drifted for ${path} ${method}`)
   invariant(op['x-required-ability'] === ability, `${operationId}: PAT ability ceiling drifted (expected ${ability})`)
-  invariant(
-    JSON.stringify([...(op['x-required-roles'] ?? [])].sort()) === JSON.stringify([...roles].sort()),
-    `${operationId}: D2 role matrix drifted (expected ${roles.join('/')})`,
-  )
+  if (roles) {
+    invariant(
+      JSON.stringify([...(op['x-required-roles'] ?? [])].sort()) === JSON.stringify([...roles].sort()),
+      `${operationId}: D2 role matrix drifted (expected ${roles.join('/')})`,
+    )
+  }
   const usesPathSelector = (op.parameters ?? []).some((p) => p?.$ref === '#/components/parameters/WorkspaceId')
   const usesHeaderSelector = (op.parameters ?? []).some((p) => p?.$ref === '#/components/parameters/WorkspaceSelector')
   if (path === '/workspaces') {
@@ -349,6 +368,22 @@ for (const [operationId, path, method, ability, roles] of managementOps) {
     invariant(usesPathSelector, `${operationId} must address the workspace via the path parameter`)
     invariant(!usesHeaderSelector, `${operationId} must not mix the header selector with the path selector`)
   }
+}
+
+for (const [operationId, path, method, ability] of recipientOps) {
+  const op = spec.paths?.[path]?.[method]
+  invariant(op, `recipient operation is missing: ${path} ${method}`)
+  invariant(op.operationId === operationId, `operationId drifted for ${path} ${method}`)
+  invariant(op['x-required-ability'] === ability, `${operationId}: PAT ability ceiling drifted (expected ${ability})`)
+  const params = op.parameters ?? []
+  invariant(
+    params.some((p) => p?.$ref === '#/components/parameters/InvitationId'),
+    `${operationId} must address the invitation via the path parameter`,
+  )
+  invariant(
+    !params.some((p) => p?.$ref === '#/components/parameters/WorkspaceId' || p?.$ref === '#/components/parameters/WorkspaceSelector'),
+    `${operationId} is recipient-scoped and must not take a workspace selector`,
+  )
 }
 
 // The selector table covers every existing workspace-scoped endpoint;
@@ -422,10 +457,84 @@ equal(
   'workspace 404 must use the safe non-disclosing envelope',
 )
 
+// ---------------------------------------------------------------------------
+// Invitations and safe audit (plan 89-workspace-roles, Task 3, D5/D6)
+// ---------------------------------------------------------------------------
+
+assertClosedObject(schema(spec, 'Invitation'), 'Invitation')
+assertClosedObject(schema(spec, 'InvitationCreateRequest'), 'InvitationCreateRequest')
+assertClosedObject(schema(spec, 'WorkspaceAuditEvent'), 'WorkspaceAuditEvent')
+
+const invitation = schema(spec, 'Invitation')
+invariant(invitation.properties?.id?.pattern === ULID_PATTERN, 'Invitation.id must expose the public ULID pattern')
+invariant(invitation.properties?.workspace_id?.pattern === ULID_PATTERN, 'Invitation.workspace_id must be a public ULID')
+invariant(
+  JSON.stringify(invitation.properties?.status?.enum) ===
+    JSON.stringify(['pending', 'accepted', 'expired', 'revoked', 'declined']),
+  'invitation state machine drifted',
+)
+// Raw invitation token/hash/tokenized URL are never part of the API surface (D5).
+for (const forbidden of ['token', 'token_hash', 'hash', 'url', 'accept_url', 'invite_url']) {
+  invariant(!(forbidden in invitation.properties), `Invitation exposes forbidden delivery field: ${forbidden}`)
+}
+
+// Audit allowlist: exact field set, nothing more (D6).
+const auditEvent = schema(spec, 'WorkspaceAuditEvent')
+equal(
+  propertyNames(auditEvent),
+  ['action', 'actor_id', 'actor_type', 'diff', 'id', 'occurred_at', 'resource_id', 'resource_type', 'retained_until', 'workspace_id'],
+  'audit event exposes fields outside the D6 allowlist',
+)
+invariant(
+  JSON.stringify(auditEvent.properties?.actor_type?.enum) === JSON.stringify(['user', 'system']),
+  'audit actor type drifted',
+)
+invariant(auditEvent.properties?.action?.maxLength === 64, 'audit action must stay bounded')
+invariant(auditEvent.properties?.retained_until?.format === 'date-time', 'audit retention target must be present')
+for (const forbidden of ['email', 'token', 'hash', 'url', 'ip', 'secret', 'password']) {
+  invariant(!(forbidden in auditEvent.properties), `audit event exposes forbidden field: ${forbidden}`)
+}
+const auditDiff = auditEvent.properties?.diff?.additionalProperties
+invariant(auditDiff?.additionalProperties === false, 'audit diff entries must be closed objects')
+equal(propertyNames(auditDiff), ['from', 'to'], 'audit diff entry fields drifted')
+
+// Audit list is bounded-paginated; export is a bounded NDJSON stream.
+const auditPage = schema(spec, 'WorkspaceAuditPage')
+for (const part of ['data', 'links', 'meta']) {
+  invariant(part in auditPage.properties, `audit page must expose ${part}`)
+}
+const exportOp = spec.paths?.['/workspaces/{workspace}/audit/export']?.get
+invariant(exportOp, 'audit export operation is missing')
+const exportLimit = (exportOp.parameters ?? []).find((p) => p?.name === 'limit')
+invariant(exportLimit?.schema?.maximum === 1000, 'audit export limit must stay bounded')
+invariant(
+  Boolean(exportOp.responses?.['200']?.content?.['application/x-ndjson']),
+  'audit export must be an NDJSON stream',
+)
+
+// Invitation creation is idempotent for an active pending duplicate (D5).
+const inviteCreate = spec.paths?.['/workspaces/{workspace}/invitations']?.post
+invariant(inviteCreate?.responses?.['200'] && inviteCreate?.responses?.['201'], 'invite create must document both create and idempotent replay')
+// Generation rotation: resend returns the same token-free view.
+equal(
+  spec.paths?.['/workspaces/{workspace}/invitations/{invitation}/resend']?.post?.responses?.['200']?.content?.['application/json']?.schema?.$ref,
+  '#/components/schemas/Invitation',
+  'resend response must use the token-free Invitation schema',
+)
+// Resource transfer is unsupported (D4): no transfer endpoint exists.
+for (const path of Object.keys(spec.paths ?? {})) {
+  invariant(!/transfer/i.test(path), `transfer endpoints are forbidden: ${path}`)
+}
+// SSE stays an HTTP surface outside OpenAPI paths (docs/sse.md), never an MCP tool.
+for (const path of Object.keys(spec.paths ?? {})) {
+  invariant(!/(sse|stream)/i.test(path), `SSE/stream endpoints must not enter the spec: ${path}`)
+}
+
 log('info', 'semantic_contract_passed', {
   operation_id: operation.operationId,
   capability_count: capabilityIds.enum.length,
   bounded_participants: preflight.properties.participants.maxItems,
-  workspace_operations: managementOps.length,
+  workspace_operations: managementOps.length + recipientOps.length,
   resource_operations_with_selector: resourceOps.length,
+  audit_allowlist_fields: propertyNames(auditEvent).length,
 })
