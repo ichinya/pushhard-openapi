@@ -10,6 +10,20 @@ info:
     Public webhooks and SSE stream live in routes/web.php (no /api/ prefix)
     and are documented in docs/api.md, not in this spec.
 
+    Workspace context (D1): каждый workspace-scoped request адресует ровно
+    один workspace. Существующие REST-операции принимают явный селектор —
+    заголовок X-Workspace-Id с public ULID; пропуск селектора — legacy
+    поведение и означает только personal workspace того же actor (никогда
+    «последний выбор UI»). Чужой/неверный селектор никогда не подменяется
+    personal fallback и возвращает safe 404. Management-операции адресуют
+    workspace путём /workspaces/{workspace}; заголовок, конфликтующий с
+    path-селектором, отклоняется с 409 (precedence не угадывается).
+    Селектор не передаётся в body/query: поле workspace_id (и иные
+    ownership-поля) в resource body запрещены и отклоняются с 422.
+    Выбранный контекст не расширяет membership: эффективное право —
+    membership role ∩ PAT abilities; session ограничена ролью без ceiling,
+    PAT '*' снимает только ability ceiling, но не роль.
+
   version: 2.0.0
 
 servers:
@@ -35,6 +49,10 @@ tags:
   - name: Servers
 
   - name: Deployments
+
+  - name: Workspaces
+
+  - name: WorkspaceMembers
 
 components:
 
@@ -1653,6 +1671,194 @@ components:
           type: string
           description: Plain-text bearer token. Save it — shown only once.
 
+    WorkspaceRole:
+
+      type: string
+
+      description: |
+        Роль membership (матрица D2). Admin — управление workspace,
+        участниками и приглашениями. DevOps — deploy и редактирование
+        проектов/биндингов, но без server/credential администрирования и
+        management-операций. Viewer — только safe read. Роль и PAT ability —
+        независимые ограничения: PAT '*' снимает только ability ceiling,
+        но не роль; session ограничена ролью без ability ceiling.
+
+      enum: [ admin, devops, viewer ]
+
+    Workspace:
+
+      type: object
+
+      description: |
+        Workspace с ролью текущего actor. id — стабильный public ULID;
+        внутренние numeric ID наружу не выдаются. Personal workspace
+        создаётся провижинером #43 (ровно один на account), его owner —
+        всегда Admin; archive/delete personal workspace запрещены.
+
+      additionalProperties: false
+
+      required: [ id, name, kind, status, role, created_at, updated_at ]
+
+      properties:
+
+        id:
+          type: string
+          pattern: '^[0-9A-HJKMNP-TV-Z]{26}$'
+          description: PublicId (ULID)
+
+        name: { type: string, maxLength: 255 }
+
+        kind:
+          type: string
+          enum: [ personal, shared ]
+
+        status:
+          type: string
+          enum: [ active, archived ]
+
+        role:
+          $ref: '#/components/schemas/WorkspaceRole'
+
+        created_at: { type: string, format: date-time }
+
+        updated_at: { type: string, format: date-time }
+
+    WorkspaceMember:
+
+      type: object
+
+      description: |
+        Участник workspace. id — public ULID membership. Email участника
+        виден только в Admin management-контексте; в audit/logs/email
+        участников чужих workspace не раскрывается.
+
+      additionalProperties: false
+
+      required: [ id, user_id, name, email, role, joined_at ]
+
+      properties:
+
+        id:
+          type: string
+          pattern: '^[0-9A-HJKMNP-TV-Z]{26}$'
+          description: PublicId (ULID) membership
+
+        user_id: { type: integer }
+
+        name: { type: string }
+
+        email: { type: string, format: email }
+
+        role:
+          $ref: '#/components/schemas/WorkspaceRole'
+
+        joined_at: { type: string, format: date-time }
+
+    WorkspaceCapabilities:
+
+      type: object
+
+      description: |
+        Эффективные возможности текущего actor в выбранном workspace:
+        membership role ∩ PAT abilities. Отражают backend authorization,
+        но не заменяют его — UI capabilities и MCP tool filtering
+        используют их только для отображения.
+
+      additionalProperties: false
+
+      required: [ workspace_id, role, can_deploy, can_edit_resources, can_manage_servers, can_manage_members, can_view_audit, can_export_audit ]
+
+      properties:
+
+        workspace_id: { type: string, description: "PublicId (ULID)" }
+
+        role:
+          $ref: '#/components/schemas/WorkspaceRole'
+
+        can_deploy:
+          type: boolean
+          description: Deploy/cancel/retry/rollback (Admin/DevOps; PAT ceiling deploy).
+
+        can_edit_resources:
+          type: boolean
+          description: Project/binding CRUD и managed env write (Admin/DevOps; PAT ceiling admin).
+
+        can_manage_servers:
+          type: boolean
+          description: Server create/delete и credential create/rotate/delete (только Admin).
+
+        can_manage_members:
+          type: boolean
+          description: Members/invitations/roles management (только Admin).
+
+        can_view_audit:
+          type: boolean
+          description: Audit list — Admin полный, DevOps ограниченный resource/deployment view (PAT ceiling read).
+
+        can_export_audit:
+          type: boolean
+          description: Audit export — только Admin (PAT ceiling admin).
+
+    WorkspaceWriteRequest:
+
+      type: object
+
+      description: |
+        Создание (POST /workspaces) и переименование (PATCH
+        /workspaces/{workspace}). Поле workspace_id и иные ownership-поля
+        в body запрещены: контекст задаётся только селектором (D1).
+
+      additionalProperties: false
+
+      required: [ name ]
+
+      properties:
+
+        name: { type: string, minLength: 1, maxLength: 255 }
+
+    WorkspaceMemberRoleRequest:
+
+      type: object
+
+      additionalProperties: false
+
+      required: [ role ]
+
+      properties:
+
+        role:
+          $ref: '#/components/schemas/WorkspaceRole'
+
+    WorkspaceError:
+
+      type: object
+
+      description: |
+        Safe-ошибка workspace-домена с machine-readable code. 404 для
+        чужого и отсутствующего workspace идентичен (non-disclosure
+        envelope); denial не создаёт job/audit/partial writes.
+
+      additionalProperties: false
+
+      required: [ message, code ]
+
+      properties:
+
+        message: { type: string }
+
+        code:
+          type: string
+          enum:
+            - workspace_not_found
+            - workspace_archived
+            - workspace_not_archived
+            - workspace_not_empty
+            - running_deployment
+            - last_admin
+            - personal_workspace_restricted
+            - workspace_selector_conflict
+            - member_not_found
+
   parameters:
 
     ProjectId:
@@ -1693,6 +1899,56 @@ components:
         type: string
         pattern: '^[0-9A-HJKMNP-TV-Z]{26}$'
         description: PublicId (ULID)
+
+    WorkspaceId:
+
+      name: workspace
+
+      in: path
+
+      required: true
+
+      schema:
+        type: string
+        pattern: '^[0-9A-HJKMNP-TV-Z]{26}$'
+        description: PublicId (ULID) workspace
+
+    WorkspaceMemberId:
+
+      name: member
+
+      in: path
+
+      required: true
+
+      schema:
+        type: string
+        pattern: '^[0-9A-HJKMNP-TV-Z]{26}$'
+        description: PublicId (ULID) membership
+
+    WorkspaceSelector:
+
+      name: X-Workspace-Id
+
+      in: header
+
+      required: false
+
+      description: |
+        Явный селектор workspace (D1): public ULID выбранного workspace.
+        Пропуск селектора — legacy-поведение и означает personal workspace
+        того же actor; чужой/неверный селектор никогда не подменяется
+        personal fallback и возвращает safe 404, идентичный отсутствующему
+        ресурсу. Один request — один workspace; селектор не расширяет
+        membership и не передаётся в body/query. На management-путях
+        /workspaces/{workspace} единственным селектором является path;
+        заголовок, конфликтующий с path, отклоняется с 409 — precedence
+        не угадывается.
+
+      schema:
+        type: string
+        pattern: '^[0-9A-HJKMNP-TV-Z]{26}$'
+        description: PublicId (ULID) workspace
 
 paths:
 
@@ -2137,6 +2393,9 @@ paths:
 
       security: [ { sanctum: [ ] } ]
 
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
+
       responses:
 
         "200":
@@ -2158,6 +2417,9 @@ paths:
       summary: Создать проект
 
       security: [ { sanctum: [ ] } ]
+
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
       requestBody:
         required: true
@@ -2205,6 +2467,9 @@ paths:
 
       security: [ { sanctum: [ ] } ]
 
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
+
       requestBody:
         required: true
         content:
@@ -2249,6 +2514,7 @@ paths:
       security: [ { sanctum: [ ] } ]
 
       parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
         - $ref: '#/components/parameters/ProjectId'
 
@@ -2279,6 +2545,7 @@ paths:
       security: [ { sanctum: [ ] } ]
 
       parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
         - $ref: '#/components/parameters/ProjectId'
 
@@ -2326,6 +2593,7 @@ paths:
       security: [ { sanctum: [ ] } ]
 
       parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
         - $ref: '#/components/parameters/ProjectId'
 
@@ -2354,6 +2622,7 @@ paths:
       security: [ { sanctum: [ ] } ]
 
       parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
         - $ref: '#/components/parameters/ProjectId'
 
@@ -2378,6 +2647,7 @@ paths:
       security: [ { sanctum: [ ] } ]
 
       parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
         - $ref: '#/components/parameters/ProjectId'
 
@@ -2414,6 +2684,7 @@ paths:
       security: [ { sanctum: [ ] } ]
 
       parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
         - $ref: '#/components/parameters/ProjectId'
 
@@ -2448,6 +2719,7 @@ paths:
       security: [ { sanctum: [ ] } ]
 
       parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
         - $ref: '#/components/parameters/ProjectId'
 
@@ -2484,6 +2756,7 @@ paths:
       security: [ { sanctum: [ ] } ]
 
       parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
         - $ref: '#/components/parameters/ProjectId'
 
@@ -2513,6 +2786,7 @@ paths:
       security: [ { sanctum: [ ] } ]
 
       parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
         - $ref: '#/components/parameters/ProjectId'
 
@@ -2564,6 +2838,7 @@ paths:
       security: [ { sanctum: [ ] } ]
 
       parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
         - $ref: '#/components/parameters/ProjectId'
 
@@ -2603,6 +2878,7 @@ paths:
       security: [ { sanctum: [ ] } ]
 
       parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
         - $ref: '#/components/parameters/ProjectId'
 
@@ -2630,6 +2906,7 @@ paths:
       security: [ { sanctum: [ ] } ]
 
       parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
         - $ref: '#/components/parameters/ProjectId'
 
@@ -2656,6 +2933,7 @@ paths:
       security: [ { sanctum: [ ] } ]
 
       parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
         - $ref: '#/components/parameters/ProjectId'
 
@@ -2727,6 +3005,7 @@ paths:
       security: [ { sanctum: [ ] } ]
 
       parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
         - $ref: '#/components/parameters/ProjectId'
 
@@ -2782,6 +3061,7 @@ paths:
       security: [ { sanctum: [ ] } ]
 
       parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
         - $ref: '#/components/parameters/ProjectId'
 
@@ -2811,6 +3091,7 @@ paths:
       security: [ { sanctum: [ ] } ]
 
       parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
         - $ref: '#/components/parameters/ProjectId'
 
@@ -2862,6 +3143,7 @@ paths:
       security: [ { sanctum: [ ] } ]
 
       parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
         - $ref: '#/components/parameters/ProjectId'
 
@@ -2912,6 +3194,7 @@ paths:
       security: [ { sanctum: [ ] } ]
 
       parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
         - $ref: '#/components/parameters/ProjectId'
 
@@ -2940,6 +3223,7 @@ paths:
       security: [ { sanctum: [ ] } ]
 
       parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
         - $ref: '#/components/parameters/ProjectId'
 
@@ -2989,6 +3273,7 @@ paths:
       security: [ { sanctum: [ ] } ]
 
       parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
         - $ref: '#/components/parameters/ProjectId'
 
@@ -3057,6 +3342,7 @@ paths:
       security: [ { sanctum: [ ] } ]
 
       parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
         - $ref: '#/components/parameters/ProjectId'
 
@@ -3092,6 +3378,7 @@ paths:
       security: [ { sanctum: [ ] } ]
 
       parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
         - $ref: '#/components/parameters/ProjectId'
 
@@ -3126,6 +3413,7 @@ paths:
       security: [ { sanctum: [ ] } ]
 
       parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
         - $ref: '#/components/parameters/ProjectId'
 
@@ -3165,6 +3453,9 @@ paths:
 
       security: [ { sanctum: [ ] } ]
 
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
+
       responses:
 
         "200":
@@ -3191,6 +3482,9 @@ paths:
       summary: Создать сервер
 
       security: [ { sanctum: [ ] } ]
+
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
       requestBody:
         required: true
@@ -3243,6 +3537,7 @@ paths:
       security: [ { sanctum: [ ] } ]
 
       parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
         - $ref: '#/components/parameters/ServerId'
 
@@ -3273,6 +3568,7 @@ paths:
       security: [ { sanctum: [ ] } ]
 
       parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
         - $ref: '#/components/parameters/ServerId'
 
@@ -3324,6 +3620,7 @@ paths:
       security: [ { sanctum: [ ] } ]
 
       parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
         - $ref: '#/components/parameters/ServerId'
 
@@ -3358,6 +3655,7 @@ paths:
       security: [ { sanctum: [ ] } ]
 
       parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
         - $ref: '#/components/parameters/ServerId'
 
@@ -3422,6 +3720,7 @@ paths:
       security: [ { sanctum: [ ] } ]
 
       parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
         - $ref: '#/components/parameters/ServerId'
 
@@ -3454,6 +3753,9 @@ paths:
       description: Создание и idempotent replay возвращают log-free deployment summary.
 
       security: [ { sanctum: [ ] } ]
+
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
       requestBody:
         required: true
@@ -3500,6 +3802,7 @@ paths:
       security: [ { sanctum: [ ] } ]
 
       parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
         - name: project_id
           in: query
@@ -3553,6 +3856,7 @@ paths:
       security: [ { sanctum: [ ] } ]
 
       parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
         - $ref: '#/components/parameters/DeploymentId'
 
@@ -3587,6 +3891,7 @@ paths:
       security: [ { sanctum: [ ] } ]
 
       parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
         - $ref: '#/components/parameters/DeploymentId'
 
@@ -3631,6 +3936,7 @@ paths:
       security: [ { sanctum: [ ] } ]
 
       parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
         - $ref: '#/components/parameters/DeploymentId'
 
@@ -3696,6 +4002,7 @@ paths:
       security: [ { sanctum: [ ] } ]
 
       parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
         - $ref: '#/components/parameters/DeploymentId'
 
@@ -3758,6 +4065,7 @@ paths:
       security: [ { sanctum: [ ] } ]
 
       parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
         - $ref: '#/components/parameters/ProjectId'
 
@@ -3840,6 +4148,7 @@ paths:
       security: [ { sanctum: [ ] } ]
 
       parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
 
         - $ref: '#/components/parameters/ProjectId'
 
@@ -3889,6 +4198,667 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+
+  /workspaces:
+
+    get:
+
+      operationId: listWorkspaces
+
+      x-required-ability: read
+
+      x-required-roles: [ admin, devops, viewer ]
+
+      tags: [ Workspaces ]
+
+      summary: Список workspace текущего пользователя
+
+      description: |
+        Возвращает только memberships текущего пользователя, включая личный
+        workspace. Исключение из selector-правила D1: коллекция адресует
+        пользователя, а не выбранный workspace; selector здесь не нужен и
+        не принимается; чужие workspace и их существование не раскрываются.
+
+      security: [ { sanctum: [ ] } ]
+
+
+      responses:
+
+        "200":
+          description: Список workspace пользователя (только собственные memberships)
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Workspace' }
+
+        "401":
+          description: Неавторизован
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+    post:
+
+      operationId: createWorkspace
+
+      x-required-ability: admin
+
+      x-required-roles: [ admin, devops, viewer ]
+
+      tags: [ Workspaces ]
+
+      summary: Создать shared workspace
+
+      description: |
+        Создатель становится Admin нового workspace kind=shared.
+        Роль пользователя в других workspace не ограничивает создание
+        собственного workspace (роль — per-workspace). PAT '*' не создаёт
+        членство; селектор и body workspace_id здесь не принимаются.
+
+      security: [ { sanctum: [ ] } ]
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WorkspaceWriteRequest' }
+
+      responses:
+
+        "201":
+          description: Workspace создан, создатель — Admin
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Workspace' }
+
+        "401":
+          description: Неавторизован
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "403":
+          description: Недостаточно способностей PAT (management требует admin; '*' не обходит роль)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "422":
+          description: Ошибка валидации (включая запрещённые ownership-поля в body)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ValidationError' }
+
+  /workspaces/{workspace}:
+
+    get:
+
+      operationId: getWorkspace
+
+      x-required-ability: read
+
+      x-required-roles: [ admin, devops, viewer ]
+
+      tags: [ Workspaces ]
+
+      summary: Получить workspace
+
+      description: |
+        Path-параметр {workspace} — единственный селектор (D1). Чужой и
+        отсутствующий workspace возвращают одинаковый safe 404 без деталей
+        чужого ресурса; membership не создаётся и не расширяется.
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/WorkspaceId'
+
+      responses:
+
+        "200":
+          description: Workspace с ролью текущего actor
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Workspace' }
+
+        "401":
+          description: Неавторизован
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "403":
+          description: Недостаточно способностей PAT (read)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "404":
+          description: Workspace отсутствует или нет membership (одинаковый safe envelope)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+    patch:
+
+      operationId: renameWorkspace
+
+      x-required-ability: admin
+
+      x-required-roles: [ admin ]
+
+      tags: [ Workspaces ]
+
+      summary: Переименовать workspace
+
+      description: |
+        Только Admin. Personal workspace переименовывать разрешено.
+        Archived workspace не принимает mutations — 409. ownership-поля
+        в body запрещены (422).
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/WorkspaceId'
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WorkspaceWriteRequest' }
+
+      responses:
+
+        "200":
+          description: Переименован
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Workspace' }
+
+        "401":
+          description: Неавторизован
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "403":
+          description: Недостаточная роль (только Admin) или способности PAT
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "404":
+          description: Workspace отсутствует или нет membership
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "409":
+          description: Workspace archived — mutations остановлены
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "422":
+          description: Ошибка валидации
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ValidationError' }
+
+    delete:
+
+      operationId: deleteWorkspace
+
+      x-required-ability: admin
+
+      x-required-roles: [ admin ]
+
+      tags: [ Workspaces ]
+
+      summary: Удалить workspace
+
+      description: |
+        Только Admin и только archived shared workspace без projects,
+        servers, bindings, deployments, active invitations и других
+        members — иначе 409. Personal workspace удалить нельзя (409,
+        personal_workspace_restricted): удаление account — отдельный
+        guarded flow. Инфраструктура не удаляется автоматически;
+        audit сохраняется по retention policy (tombstone), без FK cascade
+        чужих данных.
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/WorkspaceId'
+
+      responses:
+
+        "204":
+          description: Удалён (audit tombstone сохранён по retention policy)
+
+        "401":
+          description: Неавторизован
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "403":
+          description: Недостаточная роль (только Admin) или способности PAT
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "404":
+          description: Workspace отсутствует или нет membership
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "409":
+          description: Не archived, не пуст, personal workspace либо активные invitations
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+  /workspaces/{workspace}/archive:
+
+    post:
+
+      operationId: archiveWorkspace
+
+      x-required-ability: admin
+
+      x-required-roles: [ admin ]
+
+      tags: [ Workspaces ]
+
+      summary: Архивировать workspace
+
+      description: |
+        Только Admin, только shared. Archived останавливает mutations,
+        постановку deploy jobs и новые invitations; safe read и audit
+        сохраняются для имеющих membership. Повторный archive и archive
+        при running deployment — 409. Personal workspace архивировать
+        нельзя (409).
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/WorkspaceId'
+
+      responses:
+
+        "200":
+          description: Archived
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Workspace' }
+
+        "401":
+          description: Неавторизован
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "403":
+          description: Недостаточная роль (только Admin) или способности PAT
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "404":
+          description: Workspace отсутствует или нет membership
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "409":
+          description: Уже archived, personal workspace либо running deployment
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+  /workspaces/{workspace}/restore:
+
+    post:
+
+      operationId: restoreWorkspace
+
+      x-required-ability: admin
+
+      x-required-roles: [ admin ]
+
+      tags: [ Workspaces ]
+
+      summary: Восстановить archived workspace
+
+      description: |
+        Минимальное recovery-действие (D3): только Admin возвращает
+        archived shared workspace в active. Personal workspace и уже
+        active workspace — 409.
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/WorkspaceId'
+
+      responses:
+
+        "200":
+          description: Восстановлен в active
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Workspace' }
+
+        "401":
+          description: Неавторизован
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "403":
+          description: Недостаточная роль (только Admin) или способности PAT
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "404":
+          description: Workspace отсутствует или нет membership
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "409":
+          description: Workspace не archived (включая personal)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+  /workspaces/{workspace}/capabilities:
+
+    get:
+
+      operationId: getWorkspaceCapabilities
+
+      x-required-ability: read
+
+      x-required-roles: [ admin, devops, viewer ]
+
+      tags: [ Workspaces ]
+
+      summary: Возможности текущего actor в workspace
+
+      description: |
+        Возвращает эффективные возможности (role ∩ PAT abilities) для
+        permission-aware UI. Отражает backend authorization, не заменяет
+        его; чужой workspace — safe 404.
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/WorkspaceId'
+
+      responses:
+
+        "200":
+          description: Возможности текущего actor
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceCapabilities' }
+
+        "401":
+          description: Неавторизован
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "403":
+          description: Недостаточно способностей PAT (read)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "404":
+          description: Workspace отсутствует или нет membership
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+  /workspaces/{workspace}/members:
+
+    get:
+
+      operationId: listWorkspaceMembers
+
+      x-required-ability: admin
+
+      x-required-roles: [ admin ]
+
+      tags: [ WorkspaceMembers ]
+
+      summary: Список участников
+
+      description: |
+        Management-операция (D2): только Admin. DevOps/Viewer получают 403;
+        чужой workspace — safe 404.
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/WorkspaceId'
+
+      responses:
+
+        "200":
+          description: Участники workspace
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/WorkspaceMember' }
+
+        "401":
+          description: Неавторизован
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "403":
+          description: Недостаточная роль (только Admin) или способности PAT
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "404":
+          description: Workspace отсутствует или нет membership
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+  /workspaces/{workspace}/members/{member}:
+
+    patch:
+
+      operationId: changeWorkspaceMemberRole
+
+      x-required-ability: admin
+
+      x-required-roles: [ admin ]
+
+      tags: [ WorkspaceMembers ]
+
+      summary: Изменить роль участника
+
+      description: |
+        Только Admin. Personal owner в personal workspace не может быть
+        понижен (409, personal_workspace_restricted); понижение последнего
+        Admin shared workspace — 409 (last_admin). Решения сериализуются
+        общим workspace lock: конкурентные изменения не оставляют workspace
+        без активного Admin.
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/WorkspaceId'
+
+        - $ref: '#/components/parameters/WorkspaceMemberId'
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WorkspaceMemberRoleRequest' }
+
+      responses:
+
+        "200":
+          description: Роль изменена
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceMember' }
+
+        "401":
+          description: Неавторизован
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "403":
+          description: Недостаточная роль (только Admin) или способности PAT
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "404":
+          description: Workspace или membership отсутствуют
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "409":
+          description: Понижение последнего Admin либо personal owner
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "422":
+          description: Ошибка валидации
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ValidationError' }
+
+    delete:
+
+      operationId: removeWorkspaceMember
+
+      x-required-ability: admin
+
+      x-required-roles: [ admin ]
+
+      tags: [ WorkspaceMembers ]
+
+      summary: Исключить участника
+
+      description: |
+        Только Admin. Personal owner не исключается (409); исключение
+        последнего Admin — 409 (last_admin). После commit удаления новая
+        membership-authority не действует: fresh requests/чувствительные
+        side effects повторно авторизуются (D2 revocation).
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/WorkspaceId'
+
+        - $ref: '#/components/parameters/WorkspaceMemberId'
+
+      responses:
+
+        "204":
+          description: Участник исключён
+
+        "401":
+          description: Неавторизован
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "403":
+          description: Недостаточная роль (только Admin) или способности PAT
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "404":
+          description: Workspace или membership отсутствуют
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "409":
+          description: Последний Admin либо personal owner
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+  /workspaces/{workspace}/leave:
+
+    post:
+
+      operationId: leaveWorkspace
+
+      x-required-ability: read
+
+      x-required-roles: [ admin, devops, viewer ]
+
+      tags: [ WorkspaceMembers ]
+
+      summary: Покинуть workspace
+
+      description: |
+        Self-service выход текущего actor из выбранного workspace.
+        Owner personal workspace покинуть его не может (409);
+        единственный Admin shared workspace — 409 (last_admin).
+        Чужой workspace — safe 404.
+
+      security: [ { sanctum: [ ] } ]
+
+      parameters:
+
+        - $ref: '#/components/parameters/WorkspaceId'
+
+      responses:
+
+        "204":
+          description: Membership прекращена
+
+        "401":
+          description: Неавторизован
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+        "404":
+          description: Workspace отсутствует или нет membership
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "409":
+          description: Personal owner либо последний Admin
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
 
   # Public webhook receivers — also available from the root (web.php) for
   # proxies that only forward /api/*. No auth; signed payloads.
