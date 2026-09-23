@@ -14,15 +14,41 @@ info:
     один workspace. Существующие REST-операции принимают явный селектор —
     заголовок X-Workspace-Id с public ULID; пропуск селектора — legacy
     поведение и означает только personal workspace того же actor (никогда
-    «последний выбор UI»). Чужой/неверный селектор никогда не подменяется
-    personal fallback и возвращает safe 404. Management-операции адресуют
-    workspace путём /workspaces/{workspace}; заголовок, конфликтующий с
-    path-селектором, отклоняется с 409 (precedence не угадывается).
-    Селектор не передаётся в body/query: поле workspace_id (и иные
-    ownership-поля) в resource body запрещены и отклоняются с 422.
-    Выбранный контекст не расширяет membership: эффективное право —
-    membership role ∩ PAT abilities; session ограничена ролью без ceiling,
-    PAT '*' снимает только ability ceiling, но не роль.
+    «последний выбор UI»). Чужой селектор (well-formed ULID) никогда не
+    подменяется personal fallback и возвращает safe 404; значение вне
+    ULID-формата — структурная ошибка 422 до authorization-lookup.
+    Management-операции адресуют workspace путём /workspaces/{workspace};
+    заголовок, конфликтующий с path-селектором, отклоняется с 409
+    (precedence не угадывается). Селектор не передаётся в body/query:
+    поле workspace_id (и иные ownership-поля) в resource body запрещены
+    и отклоняются с 422. Выбранный контекст не расширяет membership:
+    эффективное право — membership role ∩ PAT abilities; session
+    ограничена ролью без ceiling, PAT '*' снимает только ability
+    ceiling, но не роль.
+
+    Матрица ролей (D2) выражена через x-required-roles на каждой
+    аутентифицированной операции: workspace-scoped — по membership роли;
+    recipient self-service (accept/decline) и account self-service
+    (auth/profile/tokens) — пустой список + x-self-service: true
+    (membership отсутствует либо не применима); публичные
+    webhook-приёмники (security: []) не имеют аутентифицированного
+    actor и ролей. updateServer дополнительно ограничивает DevOps
+    field-level metadata-allowlist (x-field-roles).
+
+    Precedence ошибок — единый contract для всех workspace-операций:
+    (1) 401 — нет/неверные креды; (2) 409 workspace_selector_conflict —
+    структурная неоднозначность селекторов (path + конфликтующий header
+    на management-путях; header, конфликтующий с приглашением, на
+    recipient-операциях), проверяется до authorization; (3) 422 —
+    структурная невалидность: селектор вне ULID-формата, запрещённые
+    ownership-поля или иная body-валидация — до authorization-lookup;
+    (4) 404 — well-formed селектор/ресурс отсутствует или ЧУЖОЙ — единый
+    safe envelope; foreign selector ВСЕГДА 404 и никогда 403, даже если
+    роль actor'а была бы недостаточна: 403 раскрыл бы membership чужого
+    workspace; (5) 403 — membership известен, но роль недостаточна
+    (workspace_forbidden) либо PAT ability ниже x-required-ability;
+    (6) 409 — state-конфликты (archived, last_admin, invitation not
+    pending, membership_exists, ...); (7) 429 throttled — throttling.
 
     Приглашения (D5), safe audit (D6) и transfer-запрет (D4) входят в
     workspace-контракт этого spec. SSE stream остаётся HTTP surface
@@ -1752,7 +1778,13 @@ components:
           pattern: '^[0-9A-HJKMNP-TV-Z]{26}$'
           description: PublicId (ULID) membership
 
-        user_id: { type: integer }
+        user_id:
+          type: string
+          pattern: '^[0-9A-HJKMNP-TV-Z]{26}$'
+          description: |
+            Stable public user identifier (PublicId, ULID) — выдаётся
+            provisioner'ом personal workspace (#43). Numeric user ID
+            наружу не выдаётся.
 
         name: { type: string }
 
@@ -1871,6 +1903,17 @@ components:
             - invitation_not_pending
             - invitation_email_mismatch
             - membership_exists
+            - workspace_forbidden
+            - unverified_email
+            - throttled
+          description: |
+            Safe-каталог кодов: 403 — workspace_forbidden (роль/ability
+            ниже матрицы D2 при известном membership) и unverified_email
+            (admission получателя); 404 — *_not_found и все случаи
+            «чужое/отсутствует» (единый non-disclosure envelope);
+            409 — workspace_selector_conflict и state-конфликты;
+            422 — structural validation (schema ValidationError);
+            429 — throttled.
 
     Invitation:
 
@@ -1939,6 +1982,32 @@ components:
         role:
           $ref: '#/components/schemas/WorkspaceRole'
 
+    InvitationResolveRequest:
+
+      type: object
+
+      description: |
+        Одноразовое предъявление invitation token (D5) в дополнение к
+        InvitationId из path. Raw token доставляется только получателю
+        через защищённый канал; API его никогда не возвращает — в DB
+        хранится только digest. Server сверяет предъявленное значение
+        с digestом ТЕКУЩЕЙ generation: resend ротирует generation, и
+        token предыдущей выпуска отклоняется. Предъявление однократно;
+        идемпотентный replay (safe 200/204) определяется парой
+        (приглашение, получатель), а не повторным потреблением token.
+
+      additionalProperties: false
+
+      required: [ token ]
+
+      properties:
+
+        token:
+          type: string
+          minLength: 32
+          maxLength: 128
+          description: Одноразовый invitation token из защищённого канала доставки; значение секретно и никогда не логируется и не возвращается API.
+
     WorkspaceAuditEvent:
 
       type: object
@@ -1949,7 +2018,9 @@ components:
         diff. Email, invitation token, hash и tokenized URL запрещены.
         Retention — 90 суток по умолчанию (retained_until), оператор может
         расширить срок; события удаления сохраняют tombstone identifiers.
-        Denied mutation не создаёт domain audit event.
+        Denied mutation не создаёт domain audit event. Event metadata
+        (event id, retained_until) — явные поля самого события и в diff
+        не входят; diff ограничен закрытым allowlist доменных полей.
 
       additionalProperties: false
 
@@ -1966,7 +2037,14 @@ components:
           type: string
           enum: [ user, system ]
 
-        actor_id: { type: integer, nullable: true, description: "null для system actor (например, expiry job)" }
+        actor_id:
+          type: string
+          nullable: true
+          pattern: '^[0-9A-HJKMNP-TV-Z]{26}$'
+          description: |
+            Stable public user identifier (PublicId, ULID) пользователя-actor —
+            выдаётся provisioner'ом personal workspace (#43); null для system
+            actor (например, expiry job). Numeric user ID наружу не выдаётся.
 
         action:
           type: string
@@ -1996,14 +2074,36 @@ components:
         diff:
           type: object
           nullable: true
-          description: Safe field-level diff; ключи — allowlist полей домена, значения ограничены и не содержат secrets/email/token/hash/URL.
-          additionalProperties:
-            type: object
-            additionalProperties: false
-            required: [ from, to ]
-            properties:
-              from: { type: string, nullable: true, maxLength: 255 }
-              to: { type: string, nullable: true, maxLength: 255 }
+          description: |
+            Safe field-level diff по закрытому allowlist доменных полей
+            (identity/связи/lifecycle). Ключи ограничены фиксированным
+            набором; email, token, hash, URL и иные контактные/секретные
+            значения запрещены и как ключи, и как значения. Event metadata
+            (event id, retained_until) — явные поля события, не ключи diff.
+          additionalProperties: false
+          properties:
+            name: { $ref: '#/components/schemas/WorkspaceAuditDiffEntry' }
+            role: { $ref: '#/components/schemas/WorkspaceAuditDiffEntry' }
+            status: { $ref: '#/components/schemas/WorkspaceAuditDiffEntry' }
+            expires_at: { $ref: '#/components/schemas/WorkspaceAuditDiffEntry' }
+            server_id: { $ref: '#/components/schemas/WorkspaceAuditDiffEntry' }
+            build_server_id: { $ref: '#/components/schemas/WorkspaceAuditDiffEntry' }
+
+    WorkspaceAuditDiffEntry:
+
+      type: object
+
+      description: Значение доменного поля до/после для safe diff; значения ограничены и не содержат secrets/email/token/hash/URL.
+
+      additionalProperties: false
+
+      required: [ from, to ]
+
+      properties:
+
+        from: { type: string, nullable: true, maxLength: 255 }
+
+        to: { type: string, nullable: true, maxLength: 255 }
 
     WorkspaceAuditPage:
 
@@ -2114,13 +2214,14 @@ components:
       description: |
         Явный селектор workspace (D1): public ULID выбранного workspace.
         Пропуск селектора — legacy-поведение и означает personal workspace
-        того же actor; чужой/неверный селектор никогда не подменяется
-        personal fallback и возвращает safe 404, идентичный отсутствующему
-        ресурсу. Один request — один workspace; селектор не расширяет
-        membership и не передаётся в body/query. На management-путях
-        /workspaces/{workspace} единственным селектором является path;
-        заголовок, конфликтующий с path, отклоняется с 409 — precedence
-        не угадывается.
+        того же actor; чужой селектор (well-formed ULID) никогда не
+        подменяется personal fallback и возвращает safe 404, идентичный
+        отсутствующему ресурсу; значение вне ULID-формата — 422 до
+        authorization-lookup. Один request — один workspace; селектор не
+        расширяет membership и не передаётся в body/query. На
+        management-путях /workspaces/{workspace} единственным селектором
+        является path; заголовок, конфликтующий с path, отклоняется
+        с 409 — precedence не угадывается.
 
       schema:
         type: string
@@ -2181,6 +2282,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               required: [ name, email, password, password_confirmation ]
               properties:
                 name: { type: string, example: "Иван Иванов" }
@@ -2223,6 +2325,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               required: [ email, password ]
               properties:
                 email: { type: string, format: email, example: "ivan@example.com" }
@@ -2258,6 +2361,10 @@ paths:
 
       operationId: logoutUser
 
+      x-required-roles: []
+
+      x-self-service: true
+
       tags: [ Auth ]
 
       summary: Выход из системы
@@ -2287,6 +2394,10 @@ paths:
 
       operationId: getCurrentUser
 
+      x-required-roles: []
+
+      x-self-service: true
+
       tags: [ Auth ]
 
       summary: Получение данных текущего пользователя
@@ -2313,6 +2424,10 @@ paths:
 
       operationId: updateProfile
 
+      x-required-roles: []
+
+      x-self-service: true
+
       tags: [ Profile ]
 
       summary: Обновление данных профиля текущего пользователя
@@ -2329,6 +2444,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               properties:
                 name: { type: string, maxLength: 255 }
                 email: { type: string, format: email, maxLength: 255 }
@@ -2359,6 +2475,10 @@ paths:
 
       operationId: updatePassword
 
+      x-required-roles: []
+
+      x-self-service: true
+
       tags: [ Profile ]
 
       summary: Смена пароля текущего пользователя
@@ -2376,6 +2496,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               required: [ current_password, password, password_confirmation ]
               properties:
                 current_password: { type: string, format: password }
@@ -2410,6 +2531,10 @@ paths:
 
       x-required-ability: admin
 
+      x-required-roles: []
+
+      x-self-service: true
+
       tags: [ Tokens ]
 
       summary: Список токенов текущего пользователя
@@ -2440,6 +2565,10 @@ paths:
 
       x-required-ability: admin
 
+      x-required-roles: []
+
+      x-self-service: true
+
       tags: [ Tokens ]
 
       summary: Создать Personal Access Token
@@ -2456,6 +2585,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               required: [ name, abilities ]
               properties:
                 name: { type: string, maxLength: 255 }
@@ -2484,6 +2614,10 @@ paths:
     get:
 
       operationId: getCurrentTokenAbilities
+
+      x-required-roles: []
+
+      x-self-service: true
 
       tags: [ Tokens ]
 
@@ -2529,6 +2663,10 @@ paths:
 
       x-required-ability: admin
 
+      x-required-roles: []
+
+      x-self-service: true
+
       tags: [ Tokens ]
 
       summary: Отозвать токен
@@ -2564,6 +2702,8 @@ paths:
 
       x-required-ability: read
 
+      x-required-roles: [ admin, devops, viewer ]
+
       tags: [ Projects ]
 
       summary: Список проектов
@@ -2589,6 +2729,8 @@ paths:
 
       x-required-ability: admin
 
+      x-required-roles: [ admin, devops ]
+
       tags: [ Projects ]
 
       summary: Создать проект
@@ -2604,6 +2746,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               required: [ name, github_repo ]
               properties:
                 name: { type: string, maxLength: 255 }
@@ -2638,6 +2781,8 @@ paths:
 
       x-required-ability: admin
 
+      x-required-roles: [ admin, devops ]
+
       tags: [ Projects ]
 
       summary: Проверка доступа к репозиторию
@@ -2653,6 +2798,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               required: [ github_repo ]
               properties:
                 github_repo: { type: string, maxLength: 255 }
@@ -2683,6 +2829,8 @@ paths:
       operationId: getProject
 
       x-required-ability: read
+
+      x-required-roles: [ admin, devops, viewer ]
 
       tags: [ Projects ]
 
@@ -2715,6 +2863,8 @@ paths:
 
       x-required-ability: admin
 
+      x-required-roles: [ admin, devops ]
+
       tags: [ Projects ]
 
       summary: Обновить проект
@@ -2732,6 +2882,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               properties:
                 name: { type: string, maxLength: 255 }
                 github_repo: { type: string, maxLength: 255 }
@@ -2763,6 +2914,8 @@ paths:
 
       x-required-ability: admin
 
+      x-required-roles: [ admin, devops ]
+
       tags: [ Projects ]
 
       summary: Удалить проект
@@ -2792,6 +2945,8 @@ paths:
 
       x-required-ability: read
 
+      x-required-roles: [ admin, devops ]
+
       tags: [ Webhooks ]
 
       summary: Настройки custom deploy-hook проекта (со секретом)
@@ -2817,6 +2972,8 @@ paths:
 
       x-required-ability: admin
 
+      x-required-roles: [ admin, devops ]
+
       tags: [ Webhooks ]
 
       summary: Создать/rotate custom deploy-hook
@@ -2834,6 +2991,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               properties:
                 rotate: { type: boolean, nullable: true }
                 enabled: { type: boolean, nullable: true }
@@ -2854,6 +3012,8 @@ paths:
 
       x-required-ability: admin
 
+      x-required-roles: [ admin, devops ]
+
       tags: [ Webhooks ]
 
       summary: Upsert custom webhook (legacy alias для createProjectDeployHook)
@@ -2871,6 +3031,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               properties:
                 rotate: { type: boolean, nullable: true }
                 enabled: { type: boolean, nullable: true }
@@ -2889,6 +3050,8 @@ paths:
 
       x-required-ability: admin
 
+      x-required-roles: [ admin, devops ]
+
       tags: [ Webhooks ]
 
       summary: Upsert custom webhook (PUT)
@@ -2906,6 +3069,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               properties:
                 rotate: { type: boolean, nullable: true }
                 enabled: { type: boolean, nullable: true }
@@ -2925,6 +3089,8 @@ paths:
       operationId: listProjectWebhooks
 
       x-required-ability: read
+
+      x-required-roles: [ admin, devops, viewer ]
 
       tags: [ Webhooks ]
 
@@ -2956,6 +3122,8 @@ paths:
 
       x-required-ability: admin
 
+      x-required-roles: [ admin, devops ]
+
       tags: [ Webhooks ]
 
       summary: Создать webhook провайдера
@@ -2978,6 +3146,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               properties:
                 rotate: { type: boolean, nullable: true }
                 enabled: { type: boolean, nullable: true }
@@ -3008,6 +3177,8 @@ paths:
 
       x-required-ability: admin
 
+      x-required-roles: [ admin, devops ]
+
       tags: [ Webhooks ]
 
       summary: Обновить webhook провайдера
@@ -3030,6 +3201,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               required: [ enabled ]
               properties:
                 enabled: { type: boolean }
@@ -3047,6 +3219,8 @@ paths:
       operationId: deleteProjectProviderWebhook
 
       x-required-ability: admin
+
+      x-required-roles: [ admin, devops ]
 
       tags: [ Webhooks ]
 
@@ -3076,6 +3250,8 @@ paths:
 
       x-required-ability: read
 
+      x-required-roles: [ admin, devops, viewer ]
+
       tags: [ Bindings ]
 
       summary: Список биндингов проект-сервер
@@ -3103,6 +3279,8 @@ paths:
 
       x-required-ability: admin
 
+      x-required-roles: [ admin, devops ]
+
       tags: [ Bindings ]
 
       summary: Создать биндинг проект-сервер
@@ -3120,6 +3298,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               required: [ server_id, deploy_path, stage ]
               properties:
                 server_id: { type: string, description: "PublicId (ULID)" }
@@ -3172,6 +3351,8 @@ paths:
       operationId: updateProjectServerBinding
 
       x-required-ability: admin
+
+      x-required-roles: [ admin, devops ]
 
       tags: [ Bindings ]
 
@@ -3231,6 +3412,8 @@ paths:
 
       x-required-ability: admin
 
+      x-required-roles: [ admin, devops ]
+
       tags: [ Bindings ]
 
       summary: Удалить биндинг
@@ -3258,6 +3441,8 @@ paths:
       operationId: mutateProjectServerEnv
 
       x-required-ability: admin
+
+      x-required-roles: [ admin, devops ]
 
       tags: [ Bindings ]
 
@@ -3310,6 +3495,8 @@ paths:
       deprecated: true
 
       x-required-ability: admin
+
+      x-required-roles: [ admin, devops ]
 
       tags: [ Bindings ]
 
@@ -3364,6 +3551,8 @@ paths:
 
       x-required-ability: read
 
+      x-required-roles: [ admin, devops, viewer ]
+
       tags: [ Bindings ]
 
       summary: Доступные (не привязанные) серверы для проекта
@@ -3393,6 +3582,8 @@ paths:
 
       x-required-ability: deploy
 
+      x-required-roles: [ admin, devops ]
+
       tags: [ Deployments ]
 
       summary: Триггер деплоя проекта
@@ -3410,6 +3601,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               required: [ server_id, stage ]
               properties:
                 server_id: { type: string, description: "PublicId (ULID)" }
@@ -3442,6 +3634,8 @@ paths:
       operationId: previewProjectDeploymentVariables
 
       x-required-ability: admin
+
+      x-required-roles: [ admin, devops ]
 
       tags: [ Deployments ]
 
@@ -3510,6 +3704,8 @@ paths:
 
       x-required-ability: read
 
+      x-required-roles: [ admin, devops, viewer ]
+
       tags: [ Deployments ]
 
       summary: Деплои проекта (пагинированные)
@@ -3545,6 +3741,8 @@ paths:
       operationId: getProjectDeployment
 
       x-required-ability: read
+
+      x-required-roles: [ admin, devops, viewer ]
 
       tags: [ Deployments ]
 
@@ -3582,6 +3780,8 @@ paths:
       operationId: cancelProjectDeployment
 
       x-required-ability: deploy
+
+      x-required-roles: [ admin, devops ]
 
       tags: [ Deployments ]
 
@@ -3624,6 +3824,8 @@ paths:
 
       x-required-ability: read
 
+      x-required-roles: [ admin, devops ]
+
       tags: [ Servers ]
 
       summary: Список серверов (пагинированный)
@@ -3654,6 +3856,8 @@ paths:
 
       x-required-ability: admin
 
+      x-required-roles: [ admin ]
+
       tags: [ Servers ]
 
       summary: Создать сервер
@@ -3669,6 +3873,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               required: [ host ]
               properties:
                 name: { type: string, nullable: true, maxLength: 255 }
@@ -3707,6 +3912,8 @@ paths:
 
       x-required-ability: read
 
+      x-required-roles: [ admin, devops ]
+
       tags: [ Servers ]
 
       summary: Детали сервера
@@ -3738,9 +3945,29 @@ paths:
 
       x-required-ability: admin
 
+      x-required-roles: [ admin, devops ]
+
+      x-field-roles:
+        description: |
+          Field-level metadata allowlist (матрица D2 на уровне полей):
+          DevOps обновляет только metadata deployment-настройки (name,
+          http_user/http_group — writable ACL); connection/credential
+          поля требуют Admin. Запрос DevOps, затрагивающий хотя бы одно
+          admin-only поле, отклоняется целиком с 403
+          workspace_forbidden (all-or-nothing, частичные применения
+          запрещены).
+        devops: [ name, http_user, http_group ]
+        admin: [ host, port, user, server_type, auth_type, ssh_key_path, ssh_key_content, password ]
+
       tags: [ Servers ]
 
       summary: Обновить сервер
+
+      description: |
+        DevOps ограничен metadata-allowlist из x-field-roles;
+        connection/credential поля (host, port, user, server_type,
+        auth_type, ssh_key_path, ssh_key_content, password) — только
+        Admin. Unknown-поля в body отклоняются с 422 (закрытая схема).
 
       security: [ { sanctum: [ ] } ]
 
@@ -3755,6 +3982,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               properties:
                 name: { type: string, maxLength: 255 }
                 host: { type: string, maxLength: 255 }
@@ -3778,17 +4006,31 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Server' }
 
+        "403":
+          description: Роль ниже матрицы D2, admin-only поле в запросе DevOps либо способности PAT — workspace_forbidden (всё поле-множество не применяется)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
         "404":
-          description: Сервер не найден
+          description: Сервер не найден (в выбранном workspace или чужой — единый safe envelope)
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+
+        "422":
+          description: Ошибка валидации (включая unknown-поля в body)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ValidationError' }
 
     delete:
 
       operationId: deleteServer
 
       x-required-ability: admin
+
+      x-required-roles: [ admin ]
 
       tags: [ Servers ]
 
@@ -3818,6 +4060,8 @@ paths:
       operationId: checkServerCapabilities
 
       x-required-ability: read
+
+      x-required-roles: [ admin, devops ]
 
       tags: [ Servers ]
 
@@ -3890,6 +4134,8 @@ paths:
 
       x-required-ability: read
 
+      x-required-roles: [ admin, devops ]
+
       tags: [ Servers ]
 
       summary: Метрики сервера
@@ -3923,6 +4169,8 @@ paths:
 
       x-required-ability: deploy
 
+      x-required-roles: [ admin, devops ]
+
       tags: [ Deployments ]
 
       summary: Legacy trigger deploy
@@ -3940,6 +4188,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               required: [ project_id, server_id ]
               properties:
                 project_id: { type: string, description: "PublicId (ULID)" }
@@ -3969,6 +4218,8 @@ paths:
       operationId: listGlobalDeployments
 
       x-required-ability: read
+
+      x-required-roles: [ admin, devops, viewer ]
 
       tags: [ Deployments ]
 
@@ -4024,6 +4275,8 @@ paths:
 
       x-required-ability: read
 
+      x-required-roles: [ admin, devops, viewer ]
+
       tags: [ Deployments ]
 
       summary: Детали деплоя (глобальный доступ)
@@ -4058,6 +4311,8 @@ paths:
       operationId: retryDeployment
 
       x-required-ability: deploy
+
+      x-required-roles: [ admin, devops ]
 
       tags: [ Deployments ]
 
@@ -4105,6 +4360,8 @@ paths:
       operationId: rollbackDeployment
 
       x-required-ability: deploy
+
+      x-required-roles: [ admin, devops ]
 
       tags: [ Deployments ]
 
@@ -4170,6 +4427,8 @@ paths:
 
       x-required-ability: admin
 
+      x-required-roles: [ admin, devops ]
+
       tags: [ Deployments ]
 
       summary: Restore a verified pre-deploy database backup as a separate audited operation
@@ -4234,6 +4493,8 @@ paths:
       operationId: listProjectReleases
 
       x-required-ability: read
+
+      x-required-roles: [ admin, devops, viewer ]
 
       tags: [ Deployments ]
 
@@ -4317,6 +4578,8 @@ paths:
       operationId: activateProjectRelease
 
       x-required-ability: deploy
+
+      x-required-roles: [ admin, devops ]
 
       tags: [ Deployments ]
 
@@ -4414,6 +4677,12 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+
+        "403":
+          description: Способности PAT ниже required ability (read) — workspace_forbidden
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
 
     post:
 
@@ -4518,6 +4787,12 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/WorkspaceError' }
 
+        "409":
+          description: Конфликт селекторов — path + X-Workspace-Id header (workspace_selector_conflict)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
     patch:
 
       operationId: renameWorkspace
@@ -4574,7 +4849,7 @@ paths:
               schema: { $ref: '#/components/schemas/WorkspaceError' }
 
         "409":
-          description: Workspace archived — mutations остановлены
+          description: Workspace archived — mutations остановлены; либо конфликт path/header селекторов (workspace_selector_conflict)
           content:
             application/json:
               schema: { $ref: '#/components/schemas/WorkspaceError' }
@@ -4636,7 +4911,7 @@ paths:
               schema: { $ref: '#/components/schemas/WorkspaceError' }
 
         "409":
-          description: Не archived, не пуст, personal workspace либо активные invitations
+          description: Не archived, не пуст, personal workspace либо активные invitations; либо конфликт селекторов (workspace_selector_conflict)
           content:
             application/json:
               schema: { $ref: '#/components/schemas/WorkspaceError' }
@@ -4695,7 +4970,7 @@ paths:
               schema: { $ref: '#/components/schemas/WorkspaceError' }
 
         "409":
-          description: Уже archived, personal workspace либо running deployment
+          description: Уже archived, personal workspace либо running deployment; либо конфликт селекторов (workspace_selector_conflict)
           content:
             application/json:
               schema: { $ref: '#/components/schemas/WorkspaceError' }
@@ -4752,7 +5027,7 @@ paths:
               schema: { $ref: '#/components/schemas/WorkspaceError' }
 
         "409":
-          description: Workspace не archived (включая personal)
+          description: Workspace не archived (включая personal); либо конфликт селекторов (workspace_selector_conflict)
           content:
             application/json:
               schema: { $ref: '#/components/schemas/WorkspaceError' }
@@ -4808,6 +5083,12 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/WorkspaceError' }
 
+        "409":
+          description: Конфликт селекторов — path + X-Workspace-Id header (workspace_selector_conflict)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
   /workspaces/{workspace}/members:
 
     get:
@@ -4856,6 +5137,12 @@ paths:
 
         "404":
           description: Workspace отсутствует или нет membership
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "409":
+          description: Конфликт селекторов — path + X-Workspace-Id header (workspace_selector_conflict)
           content:
             application/json:
               schema: { $ref: '#/components/schemas/WorkspaceError' }
@@ -4922,7 +5209,7 @@ paths:
               schema: { $ref: '#/components/schemas/WorkspaceError' }
 
         "409":
-          description: Понижение последнего Admin либо personal owner
+          description: Понижение последнего Admin либо personal owner; либо конфликт селекторов (workspace_selector_conflict)
           content:
             application/json:
               schema: { $ref: '#/components/schemas/WorkspaceError' }
@@ -4983,7 +5270,7 @@ paths:
               schema: { $ref: '#/components/schemas/WorkspaceError' }
 
         "409":
-          description: Последний Admin либо personal owner
+          description: Последний Admin либо personal owner; либо конфликт селекторов (workspace_selector_conflict)
           content:
             application/json:
               schema: { $ref: '#/components/schemas/WorkspaceError' }
@@ -5025,6 +5312,12 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
 
+        "403":
+          description: Способности PAT ниже required ability (read) — workspace_forbidden
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
         "404":
           description: Workspace отсутствует или нет membership
           content:
@@ -5032,7 +5325,7 @@ paths:
               schema: { $ref: '#/components/schemas/WorkspaceError' }
 
         "409":
-          description: Personal owner либо последний Admin
+          description: Personal owner либо последний Admin; либо конфликт path/header селекторов (workspace_selector_conflict)
           content:
             application/json:
               schema: { $ref: '#/components/schemas/WorkspaceError' }
@@ -5105,7 +5398,7 @@ paths:
               schema: { $ref: '#/components/schemas/WorkspaceError' }
 
         "409":
-          description: Получатель уже member (membership_exists)
+          description: Получатель уже member (membership_exists); либо конфликт селекторов (workspace_selector_conflict)
           content:
             application/json:
               schema: { $ref: '#/components/schemas/WorkspaceError' }
@@ -5172,6 +5465,12 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/WorkspaceError' }
 
+        "409":
+          description: Конфликт селекторов — path + X-Workspace-Id header (workspace_selector_conflict)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
   /workspaces/{workspace}/invitations/{invitation}/resend:
 
     post:
@@ -5227,7 +5526,7 @@ paths:
               schema: { $ref: '#/components/schemas/WorkspaceError' }
 
         "409":
-          description: Приглашение не в pending (accepted/expired/revoked/declined)
+          description: Приглашение не в pending (accepted/expired/revoked/declined); либо конфликт селекторов (workspace_selector_conflict)
           content:
             application/json:
               schema: { $ref: '#/components/schemas/WorkspaceError' }
@@ -5294,7 +5593,7 @@ paths:
               schema: { $ref: '#/components/schemas/WorkspaceError' }
 
         "409":
-          description: Приглашение не в pending
+          description: Приглашение не в pending; либо конфликт селекторов (workspace_selector_conflict)
           content:
             application/json:
               schema: { $ref: '#/components/schemas/WorkspaceError' }
@@ -5307,6 +5606,10 @@ paths:
 
       x-required-ability: admin
 
+      x-required-roles: []
+
+      x-self-service: true
+
       tags: [ Invitations ]
 
       summary: Принять приглашение получателем
@@ -5314,21 +5617,35 @@ paths:
       description: |
         Recipient self-service вне membership: селектор workspace не
         нужен и не принимается (заголовок, конфликтующий с приглашением,
-        — 409). Admission (D5): authenticated identity с подтверждённым
-        совпадающим email; token не позволяет назначить произвольного
-        user_id; unverified email — отказ. Роль проверяется на момент
-        acceptance по принятой policy. Unknown/expired/revoked/declined
-        дают одинаковый safe 404 без раскрытия существования. Replay
-        того же получателя — safe 200 уже-принятого без повторной
-        membership/mail/audit. Ceiling admin: acceptance повышает
-        доступ, read-only PAT не принимает приглашения. Throttling —
-        safe 429.
+        — 409 workspace_selector_conflict). Admission (D5):
+        authenticated identity с подтверждённым совпадающим email;
+        token не позволяет назначить произвольного user_id;
+        unverified email — отказ (unverified_email). Роль проверяется
+        на момент acceptance по принятой policy.
+
+        Одноразовый token (в дополнение к InvitationId) предъявляется
+        в body однократно: server хранит только digest и сверяет
+        предъявленное значение с digestом ТЕКУЩЕЙ generation — resend
+        ротирует generation, поэтому token предыдущей выпуска
+        отклоняется. Неверный, использованный или устаревший token
+        даёт тот же safe 404, что и неизвестное приглашение (без
+        раскрытия существования). Replay того же получателя — safe 200
+        уже-принятого: идемпотентность определяется парой
+        (приглашение, получатель), а не повторным потреблением token.
+        Ceiling admin: acceptance повышает доступ, read-only PAT не
+        принимает приглашения. Throttling — safe 429 (throttled).
 
       security: [ { sanctum: [ ] } ]
 
       parameters:
 
         - $ref: '#/components/parameters/InvitationId'
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InvitationResolveRequest' }
 
       responses:
 
@@ -5351,19 +5668,31 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
 
         "403":
-          description: Identity/email mismatch либо unverified email
+          description: Identity/email mismatch (invitation_email_mismatch) либо unverified email (unverified_email)
           content:
             application/json:
               schema: { $ref: '#/components/schemas/WorkspaceError' }
 
         "404":
-          description: Неизвестное, чужое, expired/revoked/declined приглашение — одинаковый safe envelope
+          description: Неизвестное, чужое, expired/revoked/declined приглашение, а также неверный/использованный/устаревший token — одинаковый safe envelope
           content:
             application/json:
               schema: { $ref: '#/components/schemas/WorkspaceError' }
 
+        "409":
+          description: Конфликт селекторов — X-Workspace-Id header противоречит приглашению (workspace_selector_conflict)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "422":
+          description: Ошибка валидации body (token отсутствует или вне допустимого формата)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ValidationError' }
+
         "429":
-          description: Превышен throttling acceptance
+          description: Превышен throttling acceptance (throttled)
           content:
             application/json:
               schema: { $ref: '#/components/schemas/WorkspaceError' }
@@ -5376,6 +5705,10 @@ paths:
 
       x-required-ability: read
 
+      x-required-roles: []
+
+      x-self-service: true
+
       tags: [ Invitations ]
 
       summary: Отклонить приглашение получателем
@@ -5384,12 +5717,23 @@ paths:
         Recipient self-service, доступ не повышает. Отклонение —
         terminal transition; повторный вызов идемпотентен (204).
         Unknown/чужое/expired/revoked/accepted — одинаковый safe 404.
+        Одноразовый token (в дополнение к InvitationId) проверяется
+        так же, как в accept: digest текущей generation, предъявление
+        однократно; неверный/использованный/устаревший token — тот же
+        safe 404. Заголовок, конфликтующий с приглашением, — 409
+        workspace_selector_conflict.
 
       security: [ { sanctum: [ ] } ]
 
       parameters:
 
         - $ref: '#/components/parameters/InvitationId'
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InvitationResolveRequest' }
 
       responses:
 
@@ -5403,16 +5747,28 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
 
         "403":
-          description: Identity/email mismatch
+          description: Identity/email mismatch (invitation_email_mismatch)
           content:
             application/json:
               schema: { $ref: '#/components/schemas/WorkspaceError' }
 
         "404":
-          description: Неизвестное, чужое или terminal-приглашение — safe envelope
+          description: Неизвестное, чужое или terminal-приглашение, а также неверный/использованный/устаревший token — safe envelope
           content:
             application/json:
               schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "409":
+          description: Конфликт селекторов — X-Workspace-Id header противоречит приглашению (workspace_selector_conflict)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "422":
+          description: Ошибка валидации body (token отсутствует или вне допустимого формата)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ValidationError' }
 
   /workspaces/{workspace}/audit:
 
@@ -5474,6 +5830,12 @@ paths:
 
         "404":
           description: Workspace отсутствует или нет membership
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "409":
+          description: Конфликт селекторов — path + X-Workspace-Id header (workspace_selector_conflict)
           content:
             application/json:
               schema: { $ref: '#/components/schemas/WorkspaceError' }
@@ -5540,6 +5902,12 @@ paths:
 
         "404":
           description: Workspace отсутствует или нет membership
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+
+        "409":
+          description: Конфликт селекторов — path + X-Workspace-Id header (workspace_selector_conflict)
           content:
             application/json:
               schema: { $ref: '#/components/schemas/WorkspaceError' }

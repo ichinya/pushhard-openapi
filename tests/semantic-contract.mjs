@@ -298,6 +298,9 @@ invariant(
       'invitation_not_pending',
       'invitation_email_mismatch',
       'membership_exists',
+      'workspace_forbidden',
+      'unverified_email',
+      'throttled',
     ]),
   'workspace error code catalog drifted',
 )
@@ -384,6 +387,14 @@ for (const [operationId, path, method, ability] of recipientOps) {
     !params.some((p) => p?.$ref === '#/components/parameters/WorkspaceId' || p?.$ref === '#/components/parameters/WorkspaceSelector'),
     `${operationId} is recipient-scoped and must not take a workspace selector`,
   )
+  invariant(
+    JSON.stringify(op['x-required-roles'] ?? null) === '[]',
+    `${operationId}: recipient self-service must declare an empty role list`,
+  )
+  invariant(
+    op['x-self-service'] === true,
+    `${operationId}: recipient self-service marker (x-self-service) is required`,
+  )
 }
 
 // The selector table covers every existing workspace-scoped endpoint;
@@ -437,16 +448,79 @@ for (const operationId of [
   )
 }
 
+// Account self-service operations: no membership role applies — empty role
+// list plus the explicit self-service marker (same shape as recipient ops).
+for (const operationId of [
+  'logoutUser', 'getCurrentUser', 'updateProfile', 'updatePassword',
+  'listTokens', 'createToken', 'getCurrentTokenAbilities', 'deleteToken',
+]) {
+  const op = findOperationById(operationId)
+  invariant(op, `account self-service operation is missing: ${operationId}`)
+  invariant(
+    JSON.stringify(op['x-required-roles'] ?? null) === '[]',
+    `${operationId}: account self-service must declare an empty role list`,
+  )
+  invariant(
+    op['x-self-service'] === true,
+    `${operationId}: account self-service marker (x-self-service) is required`,
+  )
+}
+
 // Raw ownership fields are forbidden in every request body of the spec
-// (mass assignment / transfer rejection, D4).
+// (mass assignment / transfer rejection, D4). The scan resolves $refs and
+// composition branches, so a named request schema cannot reopen the surface.
 const forbiddenBodyFields = ['workspace_id', 'personal_owner_user_id']
+
+function resolveSchemaRef(node, depth = 0) {
+  if (!node || typeof node !== 'object' || depth > 8) return node
+  const ref = node.$ref
+  if (typeof ref !== 'string' || !ref.startsWith('#/components/schemas/')) return node
+  return resolveSchemaRef(spec.components?.schemas?.[ref.slice('#/components/schemas/'.length)], depth + 1)
+}
+
+function assertClosedRequestSchema(node, label, depth = 0) {
+  const resolved = resolveSchemaRef(node, depth)
+  invariant(resolved && typeof resolved === 'object', `${label}: request schema must resolve`)
+  if (resolved.additionalProperties === false) return
+  const combinators = ['oneOf', 'anyOf'].filter((kw) => Array.isArray(resolved[kw]))
+  if (combinators.length === 1) {
+    for (const branch of resolved[combinators[0]]) {
+      assertClosedRequestSchema(branch, label, depth + 1)
+    }
+    return
+  }
+  invariant(false, `${label}: request body must reject unknown fields (additionalProperties: false)`)
+}
+
+function collectForbiddenFields(node, depth = 0) {
+  if (depth > 4) return []
+  const resolved = resolveSchemaRef(node, depth)
+  if (!resolved || typeof resolved !== 'object') return []
+  const found = []
+  for (const kw of ['oneOf', 'anyOf', 'allOf']) {
+    if (Array.isArray(resolved[kw])) {
+      for (const branch of resolved[kw]) found.push(...collectForbiddenFields(branch, depth + 1))
+    }
+  }
+  for (const [field, prop] of Object.entries(resolved.properties ?? {})) {
+    if (forbiddenBodyFields.includes(field)) found.push(field)
+    found.push(...collectForbiddenFields(prop, depth + 1))
+  }
+  return found
+}
+
+let closedRequestBodies = 0
 for (const [path, methods] of Object.entries(spec.paths ?? {})) {
   for (const [method, op] of Object.entries(methods)) {
-    const props = op?.requestBody?.content?.['application/json']?.schema?.properties
-    if (!props) continue
-    for (const field of forbiddenBodyFields) {
-      invariant(!(field in props), `${method} ${path}: raw ${field} in request body is forbidden`)
-    }
+    const bodySchema = op?.requestBody?.content?.['application/json']?.schema
+    if (!bodySchema) continue
+    closedRequestBodies += 1
+    assertClosedRequestSchema(bodySchema, `${method} ${path}`)
+    const forbidden = [...new Set(collectForbiddenFields(bodySchema))]
+    invariant(
+      forbidden.length === 0,
+      `${method} ${path}: raw ownership fields in request body are forbidden: ${forbidden.join(', ')}`,
+    )
   }
 }
 
@@ -494,9 +568,34 @@ invariant(auditEvent.properties?.retained_until?.format === 'date-time', 'audit 
 for (const forbidden of ['email', 'token', 'hash', 'url', 'ip', 'secret', 'password']) {
   invariant(!(forbidden in auditEvent.properties), `audit event exposes forbidden field: ${forbidden}`)
 }
-const auditDiff = auditEvent.properties?.diff?.additionalProperties
-invariant(auditDiff?.additionalProperties === false, 'audit diff entries must be closed objects')
-equal(propertyNames(auditDiff), ['from', 'to'], 'audit diff entry fields drifted')
+// Audit diff is a CLOSED domain-field allowlist: keys come from a fixed
+// enum-like property set, entry shape stays from/to, and event metadata
+// (event id, retained_until) is event-level — never diff keys.
+const auditDiff = auditEvent.properties?.diff
+invariant(auditDiff?.additionalProperties === false, 'audit diff must be a closed allowlist (additionalProperties: false)')
+equal(
+  propertyNames(auditDiff),
+  ['build_server_id', 'expires_at', 'name', 'role', 'server_id', 'status'],
+  'audit diff field allowlist drifted',
+)
+const auditDiffEntry = schema(spec, 'WorkspaceAuditDiffEntry')
+assertClosedObject(auditDiffEntry, 'WorkspaceAuditDiffEntry')
+equal(propertyNames(auditDiffEntry), ['from', 'to'], 'audit diff entry fields drifted')
+for (const field of propertyNames(auditDiff)) {
+  invariant(
+    auditDiff.properties?.[field]?.$ref === '#/components/schemas/WorkspaceAuditDiffEntry',
+    `audit diff field ${field} must use the closed entry schema`,
+  )
+}
+for (const forbidden of ['email', 'token', 'hash', 'url']) {
+  invariant(!(forbidden in (auditDiff.properties ?? {})), `audit diff exposes forbidden field: ${forbidden}`)
+}
+// Event metadata must be explicit event-level fields, not diff entries.
+equal(
+  [...(auditEvent.required ?? [])].sort(),
+  ['action', 'actor_type', 'id', 'occurred_at', 'retained_until', 'workspace_id'],
+  'audit event metadata (event id, retained_until) must be required event-level fields',
+)
 
 // Audit list is bounded-paginated; export is a bounded NDJSON stream.
 const auditPage = schema(spec, 'WorkspaceAuditPage')
@@ -530,11 +629,222 @@ for (const path of Object.keys(spec.paths ?? {})) {
   invariant(!/(sse|stream)/i.test(path), `SSE/stream endpoints must not enter the spec: ${path}`)
 }
 
+// ---------------------------------------------------------------------------
+// Review hardening: role matrix on every authenticated operation, closed
+// request schemas, one-time invitation token, public user identifiers.
+// ---------------------------------------------------------------------------
+
+// F1: every authenticated operation carries the D2 role matrix. The only
+// exempt surface is the public signed-payload/no-auth set (no authenticated
+// actor to authorize).
+const publicOperationIds = []
+let authenticatedOperationCount = 0
+for (const [path, methods] of Object.entries(spec.paths ?? {})) {
+  for (const [method, op] of Object.entries(methods)) {
+    if (!op?.operationId) continue
+    const security = op.security ?? spec.security ?? []
+    if (security.length === 0) {
+      publicOperationIds.push(op.operationId)
+      continue
+    }
+    authenticatedOperationCount += 1
+    invariant(
+      Array.isArray(op['x-required-roles']),
+      `${op.operationId}: x-required-roles (D2 matrix) is required on every authenticated operation`,
+    )
+  }
+}
+equal(
+  publicOperationIds.sort(),
+  [
+    'getMeta',
+    'loginUser',
+    'receiveDeployWebhookGet',
+    'receiveDeployWebhookPost',
+    'receiveGithubWebhook',
+    'receiveGitlabWebhook',
+    'registerUser',
+  ],
+  'public (unauthenticated) operation set drifted',
+)
+
+// F1: the 41 legacy workspace-scoped resource operations carry the same D2
+// matrix (read = viewer-safe; writes = Admin/DevOps; server create/delete =
+// Admin-only; server visibility stops at DevOps because hosts are infra-,
+// not viewer-safe).
+const legacyRoleMatrix = {
+  listProjects: ['admin', 'devops', 'viewer'],
+  createProject: ['admin', 'devops'],
+  validateProjectRepository: ['admin', 'devops'],
+  getProject: ['admin', 'devops', 'viewer'],
+  updateProject: ['admin', 'devops'],
+  deleteProject: ['admin', 'devops'],
+  getProjectDeployHook: ['admin', 'devops'],
+  createProjectDeployHook: ['admin', 'devops'],
+  upsertProjectWebhook: ['admin', 'devops'],
+  upsertProjectWebhookPut: ['admin', 'devops'],
+  listProjectWebhooks: ['admin', 'devops', 'viewer'],
+  createProjectProviderWebhook: ['admin', 'devops'],
+  updateProjectProviderWebhook: ['admin', 'devops'],
+  deleteProjectProviderWebhook: ['admin', 'devops'],
+  listProjectServers: ['admin', 'devops', 'viewer'],
+  createProjectServerBinding: ['admin', 'devops'],
+  updateProjectServerBinding: ['admin', 'devops'],
+  deleteProjectServerBinding: ['admin', 'devops'],
+  mutateProjectServerEnv: ['admin', 'devops'],
+  updateProjectServerEnv: ['admin', 'devops'],
+  listAvailableServers: ['admin', 'devops', 'viewer'],
+  triggerProjectDeploy: ['admin', 'devops'],
+  previewProjectDeploymentVariables: ['admin', 'devops'],
+  listProjectDeployments: ['admin', 'devops', 'viewer'],
+  getProjectDeployment: ['admin', 'devops', 'viewer'],
+  cancelProjectDeployment: ['admin', 'devops'],
+  listServers: ['admin', 'devops'],
+  createServer: ['admin'],
+  getServer: ['admin', 'devops'],
+  updateServer: ['admin', 'devops'],
+  deleteServer: ['admin'],
+  checkServerCapabilities: ['admin', 'devops'],
+  getServerMetrics: ['admin', 'devops'],
+  legacyTriggerDeploy: ['admin', 'devops'],
+  listGlobalDeployments: ['admin', 'devops', 'viewer'],
+  getGlobalDeployment: ['admin', 'devops', 'viewer'],
+  retryDeployment: ['admin', 'devops'],
+  rollbackDeployment: ['admin', 'devops'],
+  restoreDeploymentBackup: ['admin', 'devops'],
+  listProjectReleases: ['admin', 'devops', 'viewer'],
+  activateProjectRelease: ['admin', 'devops'],
+}
+invariant(
+  Object.keys(legacyRoleMatrix).length === resourceOps.length,
+  'legacy role matrix must cover exactly the workspace-scoped resource operations',
+)
+for (const [operationId, roles] of Object.entries(legacyRoleMatrix)) {
+  const op = findOperationById(operationId)
+  invariant(op, `legacy operation is missing: ${operationId}`)
+  invariant(
+    JSON.stringify([...(op['x-required-roles'] ?? [])].sort()) === JSON.stringify([...roles].sort()),
+    `${operationId}: legacy D2 role matrix drifted (expected ${roles.join('/')})`,
+  )
+}
+
+// F1: updateServer is role-gated with a field-level metadata allowlist for
+// DevOps; credential/connection fields stay Admin-only, buckets partition
+// the closed request body, and denial is documented as 403.
+const updateServerOp = findOperationById('updateServer')
+invariant(updateServerOp, 'updateServer operation is missing')
+equal(
+  [...(updateServerOp['x-required-roles'] ?? [])].sort(),
+  ['admin', 'devops'],
+  'updateServer role matrix drifted',
+)
+const updateServerFieldRoles = updateServerOp['x-field-roles']
+invariant(updateServerFieldRoles && typeof updateServerFieldRoles === 'object', 'updateServer must declare the x-field-roles allowlist')
+const devopsFields = updateServerFieldRoles.devops ?? []
+const adminOnlyFields = updateServerFieldRoles.admin ?? []
+equal(
+  [...devopsFields].sort(),
+  ['http_group', 'http_user', 'name'],
+  'DevOps server metadata allowlist drifted',
+)
+for (const field of ['host', 'port', 'user', 'server_type', 'auth_type', 'ssh_key_path', 'ssh_key_content', 'password']) {
+  invariant(adminOnlyFields.includes(field), `credential/connection field ${field} must be admin-only`)
+  invariant(!devopsFields.includes(field), `DevOps allowlist must not contain credential field ${field}`)
+}
+const updateServerBody = resolveSchemaRef(updateServerOp.requestBody?.content?.['application/json']?.schema)
+const updateServerBodyFields = Object.keys(updateServerBody?.properties ?? {})
+invariant(updateServerBodyFields.length > 0, 'updateServer request body fields missing')
+for (const field of updateServerBodyFields) {
+  invariant(
+    devopsFields.includes(field) || adminOnlyFields.includes(field),
+    `updateServer field ${field} is not covered by the field-roles allowlist`,
+  )
+}
+invariant(devopsFields.every((f) => !adminOnlyFields.includes(f)), 'updateServer field-roles buckets must be disjoint')
+invariant(
+  updateServerOp.responses?.['403'] && updateServerOp.responses?.['422'],
+  'updateServer must document role denial (403) and validation (422)',
+)
+
+// F2: accept/decline require the one-time invitation token (server-side
+// digest check against the current generation) on top of the InvitationId.
+const invitationResolveRequest = schema(spec, 'InvitationResolveRequest')
+assertClosedObject(invitationResolveRequest, 'InvitationResolveRequest')
+equal(propertyNames(invitationResolveRequest), ['token'], 'invitation resolve request drifted')
+equal([...(invitationResolveRequest.required ?? [])].sort(), ['token'], 'one-time token must be required')
+const invitationToken = invitationResolveRequest.properties?.token
+invariant(invitationToken?.type === 'string', 'invitation token must be a string')
+invariant((invitationToken?.minLength ?? 0) >= 16, 'invitation token must have a lower bound')
+invariant((invitationToken?.maxLength ?? Infinity) <= 256, 'invitation token must have an upper bound')
+for (const [operationId, path] of [
+  ['acceptInvitation', '/invitations/{invitation}/accept'],
+  ['declineInvitation', '/invitations/{invitation}/decline'],
+]) {
+  const op = spec.paths?.[path]?.post
+  invariant(op, `recipient operation is missing: ${path}`)
+  invariant(op.requestBody?.required === true, `${operationId}: one-time token body is required`)
+  invariant(
+    op.requestBody?.content?.['application/json']?.schema?.$ref === '#/components/schemas/InvitationResolveRequest',
+    `${operationId}: token body schema ref drifted`,
+  )
+  invariant(op.responses?.['409'], `${operationId}: selector-conflict 409 is missing`)
+  invariant(op.responses?.['422'], `${operationId}: body validation 422 is missing`)
+}
+
+// F6: user/actor identities are stable public ULIDs — numeric user IDs never
+// leave the API (WorkspaceMember.user_id, WorkspaceAuditEvent.actor_id).
+const memberSchema = schema(spec, 'WorkspaceMember')
+invariant(memberSchema.properties?.user_id?.type === 'string', 'WorkspaceMember.user_id must be a public ULID string, not a numeric id')
+invariant(memberSchema.properties?.user_id?.pattern === ULID_PATTERN, 'WorkspaceMember.user_id must use the canonical ULID pattern')
+const auditActorId = auditEvent.properties?.actor_id
+invariant(auditActorId?.type === 'string' && auditActorId?.nullable === true, 'WorkspaceAuditEvent.actor_id must be a nullable public ULID string')
+invariant(auditActorId?.pattern === ULID_PATTERN, 'WorkspaceAuditEvent.actor_id must use the canonical ULID pattern')
+
+// F5: unified precedence — PAT-ceiling 403 on role-open operations and
+// structural selector-conflict 409 on every path-selector operation.
+equal(
+  spec.paths?.['/workspaces']?.get?.responses?.['403']?.content?.['application/json']?.schema?.$ref,
+  '#/components/schemas/WorkspaceError',
+  'listWorkspaces PAT ceiling must surface the safe 403 envelope',
+)
+equal(
+  spec.paths?.['/workspaces/{workspace}/leave']?.post?.responses?.['403']?.content?.['application/json']?.schema?.$ref,
+  '#/components/schemas/WorkspaceError',
+  'leaveWorkspace PAT ceiling must surface the safe 403 envelope',
+)
+for (const path of [
+  '/workspaces/{workspace}',
+  '/workspaces/{workspace}/capabilities',
+  '/workspaces/{workspace}/members',
+  '/workspaces/{workspace}/invitations',
+  '/workspaces/{workspace}/audit',
+  '/workspaces/{workspace}/audit/export',
+]) {
+  invariant(spec.paths?.[path]?.get?.responses?.['409'], `selector-conflict 409 is missing on ${path}`)
+}
+for (const op of [
+  spec.paths?.['/workspaces/{workspace}']?.patch,
+  spec.paths?.['/workspaces/{workspace}']?.delete,
+  spec.paths?.['/workspaces/{workspace}/archive']?.post,
+  spec.paths?.['/workspaces/{workspace}/restore']?.post,
+  spec.paths?.['/workspaces/{workspace}/members/{member}']?.patch,
+  spec.paths?.['/workspaces/{workspace}/members/{member}']?.delete,
+  spec.paths?.['/workspaces/{workspace}/leave']?.post,
+  spec.paths?.['/workspaces/{workspace}/invitations']?.post,
+  spec.paths?.['/workspaces/{workspace}/invitations/{invitation}/resend']?.post,
+  spec.paths?.['/workspaces/{workspace}/invitations/{invitation}/revoke']?.post,
+]) {
+  invariant(op?.responses?.['409'], `${op?.operationId ?? 'management operation'}: 409 state/conflict response is missing`)
+}
+
 log('info', 'semantic_contract_passed', {
   operation_id: operation.operationId,
   capability_count: capabilityIds.enum.length,
   bounded_participants: preflight.properties.participants.maxItems,
   workspace_operations: managementOps.length + recipientOps.length,
   resource_operations_with_selector: resourceOps.length,
+  authenticated_operations_role_gated: authenticatedOperationCount,
+  closed_request_bodies: closedRequestBodies,
   audit_allowlist_fields: propertyNames(auditEvent).length,
+  audit_diff_allowlist_fields: propertyNames(auditDiff).length,
 })
