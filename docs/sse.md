@@ -16,8 +16,14 @@ tool**: это длительное соединение `routes/web.php` (бе�
   header одновременно → 409, precedence не угадывается.
 - Пропуск селектора — legacy поведение: только personal workspace того же
   actor, независимо от последнего выбора UI и количества memberships.
-- Чужой/неверный селектор никогда не вызывает personal fallback —
-  соединение не устанавливается (safe 403/404, идентичные отсутствующему).
+- Чужой селектор (well-formed ULID) никогда не вызывает personal fallback —
+  соединение не устанавливается (safe 404, идентичный отсутствующему;
+  foreign selector всегда 404 и никогда 403 — единая precedence-policy
+  с `openapi.yaml`). Значение вне ULID-формата — 422 до
+  authorization-lookup.
+- 403 возможен только для участника с недостаточной ролью
+  (workspace_forbidden) или PAT ниже required ability: он подтверждает
+  membership и никогда не выдаётся за чужой селектор.
 
 ## Отзыв доступа (D2 revocation policy)
 
