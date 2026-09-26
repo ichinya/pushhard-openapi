@@ -1644,6 +1644,8 @@ components:
 
         email: { type: string, format: email }
 
+        email_verified_at: { type: string, format: date-time, nullable: true }
+
         created_at: { type: string, format: date-time }
 
     ValidationError:
@@ -2228,6 +2230,30 @@ components:
         pattern: '^[0-9A-HJKMNP-TV-Z]{26}$'
         description: PublicId (ULID) workspace
 
+    VerifyUserId:
+
+      name: user
+
+      in: path
+
+      required: true
+
+      schema:
+        type: integer
+        description: Numeric id of the authenticated user (embedded in the signed verification URL)
+
+    VerifyHash:
+
+      name: hash
+
+      in: path
+
+      required: true
+
+      schema:
+        type: string
+        description: SHA-1 email verification hash from the signed verification URL
+
 paths:
 
   /meta:
@@ -2522,6 +2548,68 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ValidationError' }
+
+  /email/verification-notification:
+    post:
+      operationId: sendEmailVerificationNotification
+      x-required-ability: admin
+      x-required-roles: []
+      x-self-service: true
+      tags: [ Auth ]
+      summary: Отправить письмо подтверждения email
+      description: |
+        Self-service отправка verification-письма аутентифицированному
+        пользователю (D5: verified-email admission для acceptance
+        приглашений и других verify-gated действий). Доступ повышающий,
+        поэтому PAT-ceiling admin (как acceptInvitation). Для уже
+        подтверждённого email письмо повторно не отправляется — ответ
+        тот же safe 202 без раскрытия состояния. Подписанный URL из
+        письма доставляется только получателю; throttling — safe 429.
+      security: [ { sanctum: [ ] } ]
+      responses:
+        "202":
+          description: Письмо принято в доставку (или email уже подтверждён — повтор не отправляется)
+        "401": { description: Неавторизован }
+        "403": { description: Недостаточно способностей (token без admin) }
+        "429":
+          description: Слишком много запросов (throttled per user)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /email/verify/{user}/{hash}:
+    get:
+      operationId: verifyEmail
+      x-required-ability: admin
+      x-required-roles: []
+      x-self-service: true
+      tags: [ Auth ]
+      summary: Подтвердить email по подписанной ссылке
+      description: |
+        Завершение email-verification: подписанный URL из письма
+        (Laravel signed URL — query-параметры expires/signature
+        валидируются до мутации; {hash} — SHA-1 email). Подтверждает
+        email только аутентифицированному владельцу {user}; чужой id
+        или неверный hash/подпись — safe 403 без раскрытия деталей.
+        Повторный вызов для уже подтверждённого email — идемпотентный
+        200. Доступ повышающий (admission D5) — PAT-ceiling admin.
+      security: [ { sanctum: [ ] } ]
+      parameters:
+        - $ref: '#/components/parameters/VerifyUserId'
+        - $ref: '#/components/parameters/VerifyHash'
+      responses:
+        "200":
+          description: Email подтверждён (или уже был подтверждён)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        "401": { description: Неавторизован }
+        "403": { description: "Неверная подпись, hash или пользователь не совпадает с аутентифицированным" }
+        "429":
+          description: Слишком много запросов (throttled per user)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /tokens:
 

@@ -439,6 +439,7 @@ for (const operationId of resourceOps) {
 
 for (const operationId of [
   'getCurrentUser', 'updateProfile', 'updatePassword', 'listTokens', 'createToken', 'deleteToken',
+  'sendEmailVerificationNotification', 'verifyEmail',
 ]) {
   const op = findOperationById(operationId)
   invariant(op, `user-level operation is missing: ${operationId}`)
@@ -450,9 +451,12 @@ for (const operationId of [
 
 // Account self-service operations: no membership role applies — empty role
 // list plus the explicit self-service marker (same shape as recipient ops).
+// Email verification ops are access-elevating (D5 admission) and therefore
+// additionally carry the admin PAT ceiling like recipient acceptance.
 for (const operationId of [
   'logoutUser', 'getCurrentUser', 'updateProfile', 'updatePassword',
   'listTokens', 'createToken', 'getCurrentTokenAbilities', 'deleteToken',
+  'sendEmailVerificationNotification', 'verifyEmail',
 ]) {
   const op = findOperationById(operationId)
   invariant(op, `account self-service operation is missing: ${operationId}`)
@@ -463,6 +467,15 @@ for (const operationId of [
   invariant(
     op['x-self-service'] === true,
     `${operationId}: account self-service marker (x-self-service) is required`,
+  )
+}
+
+for (const operationId of ['sendEmailVerificationNotification', 'verifyEmail']) {
+  const op = findOperationById(operationId)
+  invariant(op, `email verification operation is missing: ${operationId}`)
+  invariant(
+    op['x-required-ability'] === 'admin',
+    `${operationId}: access-elevating self-service must carry the admin PAT ceiling`,
   )
 }
 
