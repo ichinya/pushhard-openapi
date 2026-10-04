@@ -2661,6 +2661,16 @@ paths:
       parameters:
         - $ref: '#/components/parameters/VerifyUserId'
         - $ref: '#/components/parameters/VerifyHash'
+        - name: expires
+          in: query
+          required: true
+          description: Unix timestamp окончания действия подписанной ссылки из verification-письма
+          schema: { type: integer, minimum: 1, maximum: 253402300799 }
+        - name: signature
+          in: query
+          required: true
+          description: Подпись из verification-письма; используется только для подтверждения владельцем email
+          schema: { type: string, minLength: 64, maxLength: 64, pattern: '^[0-9a-f]{64}$' }
       responses:
         "200":
           description: Email подтверждён (или уже был подтверждён)
