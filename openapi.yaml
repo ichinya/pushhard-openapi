@@ -3182,6 +3182,12 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/WebhookSettings' }
 
+        "201":
+          description: Создан новый custom webhook
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookSettings' }
+
   /projects/{project}/webhook:
 
     post:
@@ -3224,6 +3230,12 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/WebhookSettings' }
 
+        "201":
+          description: Создан новый custom webhook
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookSettings' }
+
     put:
 
       operationId: upsertProjectWebhookPut
@@ -3260,6 +3272,12 @@ paths:
 
         "200":
           description: Настройки webhook
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookSettings' }
+
+        "201":
+          description: Создан новый custom webhook
           content:
             application/json:
               schema: { $ref: '#/components/schemas/WebhookSettings' }

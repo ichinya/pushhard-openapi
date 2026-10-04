@@ -882,6 +882,23 @@ for (const op of [
   invariant(op?.responses?.['409'], `${op?.operationId ?? 'management operation'}: 409 state/conflict response is missing`)
 }
 
+// The shared hook upsert handler returns 201 on creation and 200 on update.
+// All public aliases must describe both results with the same safe schema.
+for (const [path, method] of [
+  ['/projects/{project}/deploy-hook', 'post'],
+  ['/projects/{project}/webhook', 'post'],
+  ['/projects/{project}/webhook', 'put'],
+]) {
+  const op = spec.paths?.[path]?.[method]
+  invariant(op?.responses?.['200'], `${op?.operationId}: existing hook 200 response is missing`)
+  invariant(op?.responses?.['201'], `${op?.operationId}: new hook 201 response is missing`)
+  equal(
+    op.responses['201'].content?.['application/json']?.schema,
+    op.responses['200'].content?.['application/json']?.schema,
+    `${op.operationId}: creation and update must share WebhookSettings schema`,
+  )
+}
+
 log('info', 'semantic_contract_passed', {
   operation_id: operation.operationId,
   capability_count: capabilityIds.enum.length,
