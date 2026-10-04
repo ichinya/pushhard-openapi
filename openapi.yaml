@@ -65,6 +65,10 @@ servers:
 
 tags:
 
+  - name: Meta
+
+    description: Общая информация об инсталляции PushHard.
+
   - name: Auth
 
   - name: Profile
@@ -1423,7 +1427,7 @@ components:
 
         stage: { type: string, enum: [ dev, staging, prod ] }
 
-        status: { type: string, enum: [ queued, running, success, failed, cancelled ] }
+        status: { $ref: '#/components/schemas/DeploymentStatus' }
 
         trigger: { type: string, enum: [ api, webhook, manual, schedule, retry, rollback, restore ] }
 
@@ -1584,14 +1588,6 @@ components:
         host: { type: string }
 
         server_type: { type: string, enum: [ regular, build ] }
-
-    OkResponse:
-
-      type: object
-
-      properties:
-
-        ok: { type: boolean }
 
     DeploymentSwitchAccepted:
 
@@ -2266,6 +2262,8 @@ paths:
 
       summary: Версия инсталляции
 
+      description: Возвращает версию этой инсталляции из APP_VERSION. Если значение не задано или некорректно, возвращает dev.
+
       security: [ ]
 
       responses:
@@ -2299,6 +2297,8 @@ paths:
       tags: [ Auth ]
 
       summary: Регистрация нового пользователя
+
+      description: Создаёт учётную запись по имени, email и подтверждённому паролю и возвращает публичные данные пользователя. Предварительная авторизация не требуется.
 
       security: [ ]
 
@@ -2342,6 +2342,8 @@ paths:
       tags: [ Auth ]
 
       summary: Вход в систему
+
+      description: Проверяет email и пароль, открывает пользовательскую сессию и возвращает данные пользователя. Неверные учётные данные возвращают 422, превышение лимита попыток — 429.
 
       security: [ ]
 
@@ -2395,6 +2397,8 @@ paths:
 
       summary: Выход из системы
 
+      description: Завершает текущую пользовательскую сессию. При наличии сессии инвалидирует её и обновляет CSRF-токен; возвращает сообщение об успешном выходе.
+
       security: [ { sanctum: [ ] } ]
 
       responses:
@@ -2427,6 +2431,8 @@ paths:
       tags: [ Auth ]
 
       summary: Получение данных текущего пользователя
+
+      description: Возвращает публичные данные пользователя, определённого текущей сессией или персональным API-токеном.
 
       security: [ { sanctum: [ ] } ]
 
@@ -2796,6 +2802,8 @@ paths:
 
       summary: Список проектов
 
+      description: Возвращает пагинированный список проектов выбранного workspace, доступных текущему пользователю.
+
       security: [ { sanctum: [ ] } ]
 
       parameters:
@@ -2822,6 +2830,8 @@ paths:
       tags: [ Projects ]
 
       summary: Создать проект
+
+      description: Создаёт проект в выбранном workspace с настройками репозитория и доступа к нему. Возвращает данные созданного проекта.
 
       security: [ { sanctum: [ ] } ]
 
@@ -2875,6 +2885,8 @@ paths:
 
       summary: Проверка доступа к репозиторию
 
+      description: Проверяет доступ к репозиторию с переданными параметрами авторизации без создания проекта. Возвращает результат проверки и доступные сведения о репозитории.
+
       security: [ { sanctum: [ ] } ]
 
       parameters:
@@ -2924,6 +2936,8 @@ paths:
 
       summary: Детали проекта
 
+      description: Возвращает данные проекта по его public ULID в выбранном workspace. Отсутствующий или недоступный проект возвращает одинаковый ответ 404.
+
       security: [ { sanctum: [ ] } ]
 
       parameters:
@@ -2956,6 +2970,8 @@ paths:
       tags: [ Projects ]
 
       summary: Обновить проект
+
+      description: Обновляет переданные настройки проекта и доступа к репозиторию в выбранном workspace. Возвращает актуальные публичные данные проекта.
 
       security: [ { sanctum: [ ] } ]
 
@@ -3008,6 +3024,8 @@ paths:
 
       summary: Удалить проект
 
+      description: Удаляет доступный пользователю проект в выбранном workspace. Успешный ответ 204 не содержит тела.
+
       security: [ { sanctum: [ ] } ]
 
       parameters:
@@ -3039,6 +3057,8 @@ paths:
 
       summary: Настройки custom deploy-hook проекта (со секретом)
 
+      description: Возвращает настройки custom deploy-hook проекта и подписанный URL для запуска деплоя. Доступ к секрету ограничен ролями admin и devops выбранного workspace.
+
       security: [ { sanctum: [ ] } ]
 
       parameters:
@@ -3065,6 +3085,8 @@ paths:
       tags: [ Webhooks ]
 
       summary: Создать/rotate custom deploy-hook
+
+      description: Создаёт или обновляет custom deploy-hook проекта. Параметр rotate перевыпускает секрет; ответ содержит настройки и подписанный URL hook.
 
       security: [ { sanctum: [ ] } ]
 
@@ -3106,6 +3128,8 @@ paths:
 
       summary: Upsert custom webhook (legacy alias для createProjectDeployHook)
 
+      description: Legacy POST-алиас настройки custom deploy-hook проекта. Поддерживает включение hook и перевыпуск секрета через rotate с теми же проверками доступа.
+
       security: [ { sanctum: [ ] } ]
 
       parameters:
@@ -3143,6 +3167,8 @@ paths:
       tags: [ Webhooks ]
 
       summary: Upsert custom webhook (PUT)
+
+      description: Legacy PUT-алиас настройки custom deploy-hook проекта. Создаёт или обновляет hook и возвращает его настройки и подписанный URL.
 
       security: [ { sanctum: [ ] } ]
 
@@ -3184,6 +3210,8 @@ paths:
 
       summary: Список вебхуков проекта (по провайдерам)
 
+      description: Возвращает настройки hook для каждого поддерживаемого провайдера проекта. Обычный просмотр не раскрывает секреты и подписанные deploy URL.
+
       security: [ { sanctum: [ ] } ]
 
       parameters:
@@ -3215,6 +3243,8 @@ paths:
       tags: [ Webhooks ]
 
       summary: Создать webhook провайдера
+
+      description: Создаёт или обновляет webhook указанного провайдера проекта. Секрет возвращается при создании или явной ротации; повторное обновление без rotate сохраняет существующий секрет.
 
       security: [ { sanctum: [ ] } ]
 
@@ -3271,6 +3301,8 @@ paths:
 
       summary: Обновить webhook провайдера
 
+      description: Меняет enabled у существующего webhook указанного провайдера проекта и возвращает настройки без раскрытия секрета.
+
       security: [ { sanctum: [ ] } ]
 
       parameters:
@@ -3314,6 +3346,8 @@ paths:
 
       summary: Удалить webhook провайдера
 
+      description: Удаляет настройки webhook указанного провайдера проекта. Успешный ответ 204 не содержит тела.
+
       security: [ { sanctum: [ ] } ]
 
       parameters:
@@ -3344,6 +3378,8 @@ paths:
 
       summary: Список биндингов проект-сервер
 
+      description: Возвращает привязанные к проекту серверы с настройками binding и stage в выбранном workspace.
+
       security: [ { sanctum: [ ] } ]
 
       parameters:
@@ -3372,6 +3408,8 @@ paths:
       tags: [ Bindings ]
 
       summary: Создать биндинг проект-сервер
+
+      description: Привязывает доступный сервер к проекту с указанными настройками stage и рецепта деплоя. Повторная привязка той же комбинации возвращает 409.
 
       security: [ { sanctum: [ ] } ]
 
@@ -3505,6 +3543,8 @@ paths:
       tags: [ Bindings ]
 
       summary: Удалить биндинг
+
+      description: Удаляет привязку сервера к проекту по числовому binding_id. Успешный ответ 204 не содержит тела.
 
       security: [ { sanctum: [ ] } ]
 
@@ -3645,6 +3685,8 @@ paths:
 
       summary: Доступные (не привязанные) серверы для проекта
 
+      description: Возвращает доступные в выбранном workspace серверы, которые ещё не привязаны к указанному проекту.
+
       security: [ { sanctum: [ ] } ]
 
       parameters:
@@ -3675,6 +3717,8 @@ paths:
       tags: [ Deployments ]
 
       summary: Триггер деплоя проекта
+
+      description: Проверяет binding сервера, stage и параметры проекта и ставит деплой в очередь. Принятая задача возвращает 202 с public ULID деплоя и статусом queued.
 
       security: [ { sanctum: [ ] } ]
 
@@ -3728,6 +3772,8 @@ paths:
       tags: [ Deployments ]
 
       summary: Preview allowlisted system variables without exposing literal secrets
+
+      description: Возвращает предпросмотр допустимых системных переменных переданного шаблона для проекта без запуска деплоя и раскрытия секретных значений.
 
       security: [ { sanctum: [ ] } ]
 
@@ -3875,6 +3921,8 @@ paths:
 
       summary: Отменить деплой
 
+      description: Запрашивает отмену доступного пользователю деплоя указанного проекта. Возвращает статус cancelled либо ошибку, если текущее состояние не допускает отмену.
+
       security: [ { sanctum: [ ] } ]
 
       parameters:
@@ -3918,6 +3966,8 @@ paths:
 
       summary: Список серверов (пагинированный)
 
+      description: Возвращает пагинированный список серверов выбранного workspace, доступных текущему пользователю.
+
       security: [ { sanctum: [ ] } ]
 
       parameters:
@@ -3949,6 +3999,8 @@ paths:
       tags: [ Servers ]
 
       summary: Создать сервер
+
+      description: Регистрирует сервер в выбранном workspace по переданным настройкам подключения и возвращает публичные данные созданного сервера.
 
       security: [ { sanctum: [ ] } ]
 
@@ -4005,6 +4057,8 @@ paths:
       tags: [ Servers ]
 
       summary: Детали сервера
+
+      description: Возвращает публичные настройки доступного сервера по его public ULID. Отсутствующий или недоступный сервер возвращает одинаковый ответ 404.
 
       security: [ { sanctum: [ ] } ]
 
@@ -4124,6 +4178,8 @@ paths:
 
       summary: Удалить сервер
 
+      description: Удаляет запись доступного сервера в выбранном workspace. Успешный ответ 204 не содержит тела.
+
       security: [ { sanctum: [ ] } ]
 
       parameters:
@@ -4228,6 +4284,8 @@ paths:
 
       summary: Метрики сервера
 
+      description: Возвращает метрики состояния доступного пользователю сервера в выбранном workspace. Недоступный сервер возвращает 404.
+
       security: [ { sanctum: [ ] } ]
 
       parameters:
@@ -4328,7 +4386,7 @@ paths:
         - name: status
           in: query
           required: false
-          schema: { type: string, enum: [ queued, running, success, failed, cancelled ] }
+          schema: { $ref: '#/components/schemas/DeploymentStatus' }
 
         - name: stage
           in: query
@@ -4454,6 +4512,8 @@ paths:
       tags: [ Deployments ]
 
       summary: Откатить деплой
+
+      description: Ставит в очередь безопасное переключение на предыдущий подходящий релиз и фиксирует причину отката. Если состояние, рецепт или план восстановления не допускают откат, операция отклоняется до запуска.
 
       security: [ { sanctum: [ ] } ]
 
@@ -4588,6 +4648,8 @@ paths:
 
       summary: Активируемые релизы биндинга с текущим маркером и diff-контекстом
 
+      description: Возвращает доступные для активации релизы binding, выбранного через server_id и stage. Для каждого релиза указывает текущий маркер и контекст сравнения source revisions.
+
       security: [ { sanctum: [ ] } ]
 
       parameters:
@@ -4635,7 +4697,7 @@ paths:
                         source_revision: { type: string, pattern: '^[0-9a-f]{40}$', nullable: true }
                         finished_at: { type: string, format: date-time, nullable: true }
                         created_at: { type: string, format: date-time, nullable: true }
-                        status: { type: string, enum: [ queued, running, success, failed, cancelled ] }
+                        status: { $ref: '#/components/schemas/DeploymentStatus' }
                         is_current: { type: boolean }
                         available: { type: boolean }
                         can_activate: { type: boolean }
@@ -4672,6 +4734,8 @@ paths:
       tags: [ Deployments ]
 
       summary: Активировать конкретный исторический release
+
+      description: Ставит в очередь переключение binding на указанный исторический релиз с обязательной причиной. Применяет проверки безопасного переключения и, при необходимости, подтверждения разрушающей миграции.
 
       security: [ { sanctum: [ ] } ]
 
@@ -6012,6 +6076,8 @@ paths:
 
       summary: Public deploy webhook (GET, custom token in path)
 
+      description: Принимает custom deploy-hook через GET, проверяет секретный token в пути и передаёт событие триггеру деплоя. Пользовательская сессия не требуется.
+
       security: [ ]
 
       parameters:
@@ -6040,6 +6106,8 @@ paths:
       tags: [ Webhooks ]
 
       summary: Public deploy webhook (POST, custom token in path)
+
+      description: Принимает custom deploy-hook через POST, проверяет секретный token в пути и передаёт событие триггеру деплоя. Пользовательская сессия не требуется.
 
       security: [ ]
 
