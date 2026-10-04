@@ -211,7 +211,9 @@ components:
 
       type: string
 
-      enum: [ before_up, after_up ]
+      oneOf:
+        - enum: [ before_up, after_up ]
+        - { type: string, nullable: true, not: { type: string } }
 
       nullable: true
 
@@ -461,9 +463,9 @@ components:
         policy: { $ref: '#/components/schemas/PreDeployBackupPolicy' }
 
         type:
-          nullable: true
-          allOf:
+          oneOf:
             - $ref: '#/components/schemas/PreDeployBackupType'
+            - { type: string, nullable: true, not: { type: string } }
 
         retention_days: { type: integer, minimum: 1, maximum: 365 }
 
@@ -1016,9 +1018,9 @@ components:
         build_server_id: { type: string, nullable: true, description: "PublicId (ULID)" }
 
         build_server:
-          nullable: true
-          allOf:
+          oneOf:
             - $ref: '#/components/schemas/ServerSummary'
+            - { type: object, nullable: true, not: { type: object } }
 
         deploy_path: { type: string }
 
@@ -1033,9 +1035,9 @@ components:
         keep_releases: { type: integer }
 
         recipe_options:
-          nullable: true
-          allOf:
+          oneOf:
             - $ref: '#/components/schemas/ServerBindingRecipeOptions'
+            - { type: object, nullable: true, not: { type: object } }
 
         env_configured: { type: boolean }
 
@@ -1431,19 +1433,24 @@ components:
 
         trigger: { type: string, enum: [ api, webhook, manual, schedule, retry, rollback, restore ] }
 
-        provider: { type: string }
+        provider: { type: string, nullable: true }
 
-        external_id: { type: string }
+        external_id: { type: string, nullable: true }
 
         source_revision: { type: string, pattern: '^[0-9a-f]{40}$', nullable: true, description: Immutable deployed git commit. }
 
-        initiator_type: { type: string, enum: [ manual_ui, pat, webhook, schedule, retry, rollback, restore ], nullable: true }
+        initiator_type:
+          type: string
+          nullable: true
+          oneOf:
+            - enum: [ manual_ui, pat, webhook, schedule, retry, rollback, restore ]
+            - { type: string, nullable: true, not: { type: string } }
 
         actor_token_id: { type: integer, nullable: true, description: Safe Sanctum token database id for PAT attribution; never token plaintext or hash. }
 
         actor_display_name: { type: string, nullable: true, description: "Safe actor reference (user name, PAT token name or provider delivery id); retry and rollback identify the current authenticated operator, never the source actor or a secret." }
 
-        started_at: { type: string, format: date-time }
+        started_at: { type: string, format: date-time, nullable: true }
 
         finished_at: { type: string, format: date-time, nullable: true }
 
@@ -1460,14 +1467,14 @@ components:
           additionalProperties: true
 
         project:
-          nullable: true
-          allOf:
+          oneOf:
             - $ref: '#/components/schemas/DeploymentProjectSummary'
+            - { type: object, nullable: true, not: { type: object } }
 
         server:
-          nullable: true
-          allOf:
+          oneOf:
             - $ref: '#/components/schemas/ServerSummary'
+            - { type: object, nullable: true, not: { type: object } }
 
         created_at: { type: string, format: date-time }
 
@@ -2057,7 +2064,9 @@ components:
         resource_type:
           type: string
           nullable: true
-          enum: [ workspace, membership, invitation, project, server, binding, deployment ]
+          oneOf:
+            - enum: [ workspace, membership, invitation, project, server, binding, deployment ]
+            - { type: string, nullable: true, not: { type: string } }
 
         resource_id:
           type: string
@@ -2884,8 +2893,14 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items: { $ref: '#/components/schemas/Project' }
+                type: object
+                required: [ data, links, meta ]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Project' }
+                  links: { type: object }
+                  meta: { type: object }
 
     post:
 
@@ -3308,12 +3323,12 @@ paths:
       responses:
 
         "200":
-          description: Map of provider to WebhookSettings
+          description: Array of provider webhook settings
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties:
+                type: array
+                items:
                   $ref: '#/components/schemas/WebhookSettings'
 
   /projects/{project}/webhooks/{provider}:
@@ -4793,7 +4808,9 @@ paths:
                         disabled_reason:
                           type: string
                           nullable: true
-                          enum: [ deployment_not_successful, deploy_path_invalid, inventory_unavailable, inventory_timeout, inventory_invalid, current_release_unknown, current_release_unrecorded, release_missing, already_current, rollback_unsupported, release_compatibility_unknown, release_environment_mismatch, release_configuration_mismatch ]
+                          oneOf:
+                            - enum: [ deployment_not_successful, deploy_path_invalid, inventory_unavailable, inventory_timeout, inventory_invalid, current_release_unknown, current_release_unrecorded, release_missing, already_current, rollback_unsupported, release_compatibility_unknown, release_environment_mismatch, release_configuration_mismatch ]
+                            - { type: string, nullable: true, not: { type: string } }
 
         "404":
           description: Проект не найден
