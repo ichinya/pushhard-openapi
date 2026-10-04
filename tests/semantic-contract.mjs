@@ -899,6 +899,52 @@ for (const [path, method] of [
   )
 }
 
+// Response contracts are distinct from request inputs. Collections must match
+// the established paginator/provider-array wire format consumed by Web.
+const projectListResponse = spec.paths['/projects'].get.responses['200'].content['application/json'].schema
+invariant(projectListResponse.type === 'object', 'project list must use the documented paginated envelope')
+equal([...projectListResponse.required].sort(), ['data', 'links', 'meta'], 'project pagination fields are required')
+invariant(projectListResponse.properties.data.type === 'array', 'project pagination data must be an array')
+equal(projectListResponse.properties.data.items, { $ref: '#/components/schemas/Project' }, 'project pagination item contract drifted')
+for (const field of ['links', 'meta']) {
+  invariant(projectListResponse.properties[field].type === 'object', `project pagination ${field} must be an object`)
+}
+const webhookListResponse = spec.paths['/projects/{project}/webhooks'].get.responses['200'].content['application/json'].schema
+invariant(webhookListResponse.type === 'array', 'provider webhook list must be an array')
+equal(webhookListResponse.items, { $ref: '#/components/schemas/WebhookSettings' }, 'webhook list item contract drifted')
+
+// OAS 3.0 nullable does not override an allOf reference. A null-only branch
+// preserves validation of every non-null value against the original reference.
+function assertNullableResponseRef(value, name, referencedSchema, nullBranchType) {
+  invariant(Array.isArray(value.oneOf) && value.oneOf.length === 2, `${name} must accept the unchanged reference or null`)
+  equal(value.oneOf[0], { $ref: `#/components/schemas/${referencedSchema}` }, `${name} non-null validation must remain referenced`)
+  equal(value.oneOf[1], { type: nullBranchType, nullable: true, not: { type: nullBranchType } }, `${name} fallback must accept only actual null`)
+}
+function assertNullableResponseEnum(value, name, allowedValues) {
+  invariant(value.type === 'string' && value.nullable === true, `${name} must retain its explicit nullable string type`)
+  equal(value.oneOf, [{ enum: allowedValues }, { type: 'string', nullable: true, not: { type: 'string' } }], `${name} must accept its closed values or actual null`)
+}
+const responseBinding = schema(spec, 'ServerBindingContract')
+assertNullableResponseRef(responseBinding.properties.build_server, 'binding build_server', 'ServerSummary', 'object')
+assertNullableResponseRef(responseBinding.properties.recipe_options, 'binding recipe_options', 'ServerBindingRecipeOptions', 'object')
+const responseDeployment = schema(spec, 'DeploymentSummary')
+assertNullableResponseRef(responseDeployment.properties.project, 'deployment project', 'DeploymentProjectSummary', 'object')
+assertNullableResponseRef(responseDeployment.properties.server, 'deployment server', 'ServerSummary', 'object')
+const responseBackup = schema(spec, 'PreDeployBackupExecutionSummary')
+assertNullableResponseRef(responseBackup.properties.type, 'backup type', 'PreDeployBackupType', 'string')
+invariant(responseBackup.required.includes('credentials_file_configured'), 'safe backup configuration flag must remain required')
+invariant(responseBackup.properties.credentials_file_configured.type === 'boolean', 'safe backup configuration flag must remain boolean')
+for (const field of ['provider', 'external_id', 'started_at']) {
+  const value = responseDeployment.properties[field]
+  invariant(value.type === 'string' && value.nullable === true, `queued deployment ${field} must accept null without changing its non-null type`)
+}
+invariant(responseDeployment.properties.started_at.format === 'date-time', 'started_at must preserve date-time validation')
+assertNullableResponseEnum(schema(spec, 'DockerComposeMigrationTiming'), 'migration timing', ['before_up', 'after_up'])
+assertNullableResponseEnum(responseDeployment.properties.initiator_type, 'initiator type', ['manual_ui', 'pat', 'webhook', 'schedule', 'retry', 'rollback', 'restore'])
+assertNullableResponseEnum(schema(spec, 'WorkspaceAuditEvent').properties.resource_type, 'audit resource type', ['workspace', 'membership', 'invitation', 'project', 'server', 'binding', 'deployment'])
+const releaseDisabledReason = spec.paths['/projects/{project}/releases'].get.responses['200'].content['application/json'].schema.properties.data.items.properties.disabled_reason
+assertNullableResponseEnum(releaseDisabledReason, 'release disabled reason', ['deployment_not_successful', 'deploy_path_invalid', 'inventory_unavailable', 'inventory_timeout', 'inventory_invalid', 'current_release_unknown', 'current_release_unrecorded', 'release_missing', 'already_current', 'rollback_unsupported', 'release_compatibility_unknown', 'release_environment_mismatch', 'release_configuration_mismatch'])
+
 log('info', 'semantic_contract_passed', {
   operation_id: operation.operationId,
   capability_count: capabilityIds.enum.length,
