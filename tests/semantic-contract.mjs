@@ -41,6 +41,25 @@ invariant(bundlePath, 'bundle path argument is required')
 log('info', 'semantic_contract_started', { bundle: 'openapi.json' })
 
 const spec = JSON.parse(readFileSync(bundlePath, 'utf8'))
+// D3 account deletion is self-service, password confirmed and guarded by
+// last-admin/personal-workspace lifecycle policy. It never accepts a selector.
+const deleteAccount = spec.paths?.['/profile']?.delete
+invariant(deleteAccount?.operationId === 'deleteAccount', 'guarded DELETE /profile is required')
+invariant(deleteAccount['x-required-ability'] === 'admin', 'account deletion requires the admin PAT ceiling')
+equal(deleteAccount['x-required-roles'], [], 'account deletion must not require a selected workspace role')
+invariant(deleteAccount['x-self-service'] === true, 'account deletion must be self-service')
+invariant(!deleteAccount.parameters?.length, 'account deletion must not accept a workspace selector')
+invariant(deleteAccount.requestBody?.required === true, 'account deletion requires password confirmation')
+const deleteAccountBody = deleteAccount.requestBody?.content?.['application/json']?.schema
+assertClosedObject(deleteAccountBody, 'DeleteAccountRequest')
+equal(propertyNames(deleteAccountBody), ['current_password'], 'account deletion body must contain only current_password')
+equal(deleteAccountBody.required, ['current_password'], 'account deletion password is required')
+invariant(deleteAccountBody.properties.current_password.format === 'password', 'account deletion password must be marked sensitive')
+for (const status of ['204', '401', '403', '409', '422', '429']) {
+  invariant(deleteAccount.responses?.[status], `account deletion response ${status} is required`)
+}
+invariant(!deleteAccount.responses['204'].content, 'deleted accounts must return no response body')
+
 const capabilityIds = schema(spec, 'ServerCapabilityId')
 equal(
   capabilityIds.enum,

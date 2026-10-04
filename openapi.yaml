@@ -2501,6 +2501,64 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ValidationError' }
 
+    delete:
+      operationId: deleteAccount
+      x-required-ability: admin
+      x-required-roles: []
+      x-self-service: true
+      tags: [ Profile ]
+      summary: Удалить текущий аккаунт с подтверждением паролем
+      description: |
+        Self-service удаление требует current_password и ограничено пятью
+        попытками в минуту. Последний Admin shared workspace сначала должен
+        передать роль другому участнику. Удаление блокируется, если personal
+        workspace содержит проекты, серверы, других участников или pending
+        invitations. Пустой personal workspace и аккаунт удаляются атомарно;
+        shared данные остаются у workspace, membership снимается, аудит
+        сохраняет безопасный tombstone без персональных данных. Archived
+        shared workspace также требует сохранения другого Admin. Workspace
+        selector не используется. Аккаунт, созданный через внешний провайдер
+        без пароля, сначала должен установить пароль штатным recovery flow.
+      security: [ { sanctum: [ ] } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [ current_password ]
+              properties:
+                current_password: { type: string, format: password }
+      responses:
+        "204":
+          description: Аккаунт и пустой personal workspace удалены
+        "401":
+          description: Неавторизован
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        "403":
+          description: PAT не имеет admin ability
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+        "409":
+          description: Аккаунт остаётся последним Admin либо personal workspace не пуст
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+        "422":
+          description: Неверный пароль либо недопустимые поля запроса
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ValidationError' }
+        "429":
+          description: Превышен лимит подтверждений пароля
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   /profile/password:
 
     patch:
