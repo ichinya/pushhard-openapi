@@ -60,6 +60,19 @@ for (const status of ['204', '401', '403', '409', '422', '429']) {
 }
 invariant(!deleteAccount.responses['204'].content, 'deleted accounts must return no response body')
 
+const verifyEmail = spec.paths?.['/email/verify/{user}/{hash}']?.get
+invariant(verifyEmail?.operationId === 'verifyEmail', 'verifyEmail operation is required')
+for (const name of ['expires', 'signature']) {
+  const parameter = verifyEmail.parameters?.find((value) => value.name === name)
+  invariant(parameter?.in === 'query' && parameter.required === true, `verifyEmail must declare required ${name} query input`)
+  if (name === 'expires') {
+    invariant(parameter.schema.type === 'integer' && parameter.schema.minimum > 0, 'signed expiry must be a positive integer')
+  } else {
+    invariant(parameter.schema.type === 'string' && parameter.schema.minLength === 64 && parameter.schema.maxLength === 64,
+      'signed verification signature must be exactly64 characters')
+  }
+}
+
 const capabilityIds = schema(spec, 'ServerCapabilityId')
 equal(
   capabilityIds.enum,
