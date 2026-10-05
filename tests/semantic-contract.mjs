@@ -92,7 +92,7 @@ equal(
   ['recipe', 'server_role', 'target_server_id'],
   'capability context required fields drifted',
 )
-equal(context.properties.recipe.enum, ['docker_compose', 'go'], 'recipe enum drifted')
+equal(context.properties.recipe.enum, ['docker_compose', 'go', 'laravel', 'php', 'node'], 'recipe enum drifted')
 equal(context.properties.server_role.enum, ['target', 'build'], 'server role enum drifted')
 equal(
   context.properties.image_transport.enum,
@@ -927,6 +927,42 @@ function assertNullableResponseEnum(value, name, allowedValues) {
 const responseBinding = schema(spec, 'ServerBindingContract')
 assertNullableResponseRef(responseBinding.properties.build_server, 'binding build_server', 'ServerSummary', 'object')
 assertNullableResponseRef(responseBinding.properties.recipe_options, 'binding recipe_options', 'ServerBindingRecipeOptions', 'object')
+const options = schema(spec, 'ServerBindingRecipeOptions')
+assertClosedObject(options, 'ServerBindingRecipeOptions')
+invariant(!options.anyOf && !options.oneOf, 'options must have one closed object shape')
+const createBinding = spec.paths['/projects/{project}/servers'].post.requestBody.content['application/json'].schema
+const updateBinding = schema(spec, 'UpdateProjectServerBindingRequest')
+for (const [name, body] of [['create', createBinding], ['update', updateBinding]]) {
+  assertNullableResponseRef(body.properties.recipe_options, `${name} recipe_options`, 'ServerBindingRecipeOptions', 'object')
+  invariant(!body.properties.recipe_options_compatibility, 'compatibility diagnostics must not be writable')
+}
+equal(responseBinding.properties.recipe_options_compatibility, { $ref: '#/components/schemas/RecipeOptionsCompatibility' }, 'binding must expose compatibility diagnostics')
+const compatibility = schema(spec, 'RecipeOptionsCompatibility')
+assertClosedObject(compatibility, 'RecipeOptionsCompatibility')
+equal(compatibility.required, ['status', 'issues', 'issues_truncated'], 'compatibility diagnostics must be complete')
+invariant(compatibility.readOnly === true && compatibility.properties.issues.maxItems === 100, 'compatibility diagnostics must be read-only and bounded')
+assertClosedObject(compatibility.properties.issues.items, 'compatibility issue')
+equal(propertyNames(compatibility.properties.issues.items), ['code', 'field'], 'diagnostics must omit raw values')
+for (const field of ['shared_dirs', 'shared_files', 'writable_dirs', 'upload_paths']) {
+  equal(options.properties[field].items, { $ref: '#/components/schemas/RecipeRelativePath' }, `${field} must use the common path policy`)
+  invariant(options.properties[field].type === 'array' && options.properties[field].maxItems === 100 && !options.properties[field].nullable, `${field} must remain bounded and non-nullable`)
+}
+for (const field of ['build_cmd', 'test_cmd', 'migrate_cmd', 'before_activate_cmd', 'after_activate_cmd', 'health_check_cmd']) {
+  equal(options.properties[field], { $ref: '#/components/schemas/RecipeScript' }, `${field} must use the whole-script contract`)
+}
+const relativePath = schema(spec, 'RecipeRelativePath')
+invariant(relativePath.minLength === 1 && relativePath.maxLength === 500, 'relative path bounds drifted')
+const pathPattern = new RegExp(relativePath.pattern)
+for (const value of ['.env', 'storage', 'public/uploads', 'bin/my-app']) invariant(pathPattern.test(value), 'safe literal path rejected')
+for (const value of ['', '/', '../data', 'data/../x', 'data/./x', '-rf', 'a//b', 'a/', 'C:/data', 'a\\b', 'a b', '{{release_path}}', 'a;id']) invariant(!pathPattern.test(value), 'unsafe relative path admitted')
+const script = schema(spec, 'RecipeScript')
+invariant(script.type === 'string' && script.nullable === true && script.maxLength === 16384, 'script bounds/type drifted')
+invariant(new RegExp(script.pattern).test('printf ok\nexit 1') && !new RegExp(script.pattern).test('echo\0bad'), 'whole multiline script / NUL policy drifted')
+for (const field of ['before_symlink_cmd', 'stop_cmd', 'after_symlink_cmd', 'start_cmd', 'restart_cmd']) invariant(options.properties[field].deprecated === true, 'legacy aliases must remain explicitly deprecated')
+for (const field of ['compose_file', 'backup_policy', 'backup_type', 'backup_retention_days', 'backup_database', 'backup_credentials_file', 'migration_policy', 'migration_down_command', 'critical_changed_files']) invariant(options.properties[field], 'known recipe-specific option removed')
+const lifecycle = schema(spec, 'DeploymentExecutionPlan').properties.lifecycle.properties
+for (const field of ['has_before_activate_cmd', 'has_after_activate_cmd', 'has_health_check_cmd', 'shared_dirs_count', 'shared_files_count', 'writable_dirs_count']) invariant(lifecycle[field], 'v3 safe lifecycle field missing')
+for (const field of ['build_cmd', 'test_cmd', 'migrate_cmd', 'before_activate_cmd', 'after_activate_cmd', 'health_check_cmd']) invariant(!lifecycle[field], 'script leaked into public lifecycle')
 const responseDeployment = schema(spec, 'DeploymentSummary')
 assertNullableResponseRef(responseDeployment.properties.project, 'deployment project', 'DeploymentProjectSummary', 'object')
 assertNullableResponseRef(responseDeployment.properties.server, 'deployment server', 'ServerSummary', 'object')
