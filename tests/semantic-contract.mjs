@@ -938,6 +938,9 @@ for (const [name, body] of [['create', createBinding], ['update', updateBinding]
 }
 equal(responseBinding.properties.recipe_options_compatibility, { $ref: '#/components/schemas/RecipeOptionsCompatibility' }, 'binding must expose compatibility diagnostics')
 const compatibility = schema(spec, 'RecipeOptionsCompatibility')
+const conflictOptions = schema(spec, 'ManagedEnvRevisionConflict').properties
+assertNullableResponseRef(conflictOptions.recipe_options, 'conflict recipe_options', 'ServerBindingRecipeOptions', 'object')
+equal(conflictOptions.recipe_options_compatibility, { $ref: '#/components/schemas/RecipeOptionsCompatibility' }, 'conflict must expose the same compatibility diagnostics')
 assertClosedObject(compatibility, 'RecipeOptionsCompatibility')
 equal(compatibility.required, ['status', 'issues', 'issues_truncated'], 'compatibility diagnostics must be complete')
 invariant(compatibility.readOnly === true && compatibility.properties.issues.maxItems === 100, 'compatibility diagnostics must be read-only and bounded')

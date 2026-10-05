@@ -880,6 +880,14 @@ components:
 
       properties:
 
+        recipe_options:
+          oneOf:
+            - $ref: '#/components/schemas/ServerBindingRecipeOptions'
+            - { type: object, nullable: true, not: { type: object } }
+
+        recipe_options_compatibility:
+          $ref: '#/components/schemas/RecipeOptionsCompatibility'
+
         message: { type: string }
 
         scope: { $ref: '#/components/schemas/ManagedEnvScope' }
