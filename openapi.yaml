@@ -292,6 +292,20 @@ components:
         migrate_cmd: { $ref: '#/components/schemas/RecipeScript' }
         allow_env_example_fallback: { type: boolean }
         frontend_pregenerated: { type: boolean }
+        composer_allow_phar:
+          type: boolean
+          description: |
+            PHP/Laravel only. Permit managed Composer PHAR fallback when system Composer
+            cannot run under the selected target PHP. Explicit false is preserved.
+            New bindings persist false when omitted. A missing legacy key resolves to
+            false for PHP and true for Laravel without rewriting stored JSON on reads.
+            PATCH omission preserves options; an object fully replaces them, and {} or
+            null restores those recipe-specific compatibility defaults.
+            Both recipes skip all Composer/PHP discovery and downloads without composer.json.
+            Usable system Composer is preferred over deploy_path/.dep/composer.phar.
+            First download verifies the official installer against its independently
+            retrieved current SHA-384 checksum; later deployments reuse a valid PHAR.
+            Install failures never select another source or retry installation.
         before_symlink_cmd:
           allOf: [{ $ref: '#/components/schemas/RecipeScript' }]
           deprecated: true
@@ -701,6 +715,24 @@ components:
         lifecycle:
           type: object
           properties:
+            composer_allow_phar:
+              type: boolean
+              description: Resolved PHP/Laravel binding policy; advisory inventory does not change it.
+            composer_phar_relative_path:
+              type: string
+              enum: [ .dep/composer.phar ]
+              description: Managed path relative to the target binding deploy_path.
+            composer_source:
+              type: string
+              enum: [ system, phar, skipped ]
+              description: Measured target runtime source. Omitted until measured; absence never means skipped. skipped means composer.json was absent.
+            composer_version:
+              type: string
+              maxLength: 64
+              pattern: '^[0-9][A-Za-z0-9.+_-]{0,63}$'
+              description: Bounded normalized version observed using the selected target PHP; omitted for skipped or failed health checks.
+            composer_error_code:
+              $ref: '#/components/schemas/ComposerRuntimeErrorCode'
             has_validation_cmd: { type: boolean }
             has_test_cmd: { type: boolean }
             has_build_cmd: { type: boolean }
@@ -1228,7 +1260,14 @@ components:
 
     ServerCapabilityCheckContext:
 
-      description: Laravel/PHP/Node allow target role only, without build_server_id or image_transport; unsupported selectors return 422 before SSH. Stored inactive build selectors remain binding metadata. Go/Compose retain separate-build topology.
+      description: |
+        Laravel/PHP/Node allow target role only, without build_server_id or image_transport;
+        unsupported selectors return 422 before SSH. Stored inactive build selectors remain
+        binding metadata. Go/Compose retain separate-build topology. Optional project_id
+        resolves an actor-accessible project/server binding for read-only PHAR advisory.
+        binding_id requires project_id and must match project, route server and recipe.
+        Omitted binding_id requires exactly one matching binding; multiple stages return
+        422 before SSH. No client-supplied deploy/PHAR path or download permission is accepted.
 
       type: object
 
@@ -1259,6 +1298,16 @@ components:
           type: string
           pattern: '^[0-9A-HJKMNP-TV-Z]{26}$'
           description: Optional build server PublicId (ULID). The API derives topology by comparing public IDs.
+
+        project_id:
+          type: string
+          pattern: '^[0-9A-HJKMNP-TV-Z]{26}$'
+          description: Optional project PublicId; access and binding ownership are checked before SSH. Existing workspace roles and PAT abilities still apply.
+
+        binding_id:
+          type: integer
+          minimum: 1
+          description: Optional binding identity within project_id. Selects the exact stage binding; arbitrary paths are forbidden.
 
     ServerCapabilityCheckRequest:
 
@@ -1401,6 +1450,65 @@ components:
 
         evaluation:
           $ref: '#/components/schemas/ServerCapabilityEvaluation'
+
+        binding_composer:
+          $ref: '#/components/schemas/BindingComposerAdvisory'
+
+    BindingComposerAdvisory:
+      type: object
+      additionalProperties: false
+      readOnly: true
+      required: [ phar_status, phar_relative_path, checked_at ]
+      description: |
+        Read-only advisory for the exact authorized PHP/Laravel target binding, using its
+        SSH user and fixed managed path. No scan, download or installer execution occurs.
+        PHAR presence does not prove health or change the generic Composer capability.
+        No binding or no fresh binding probe means unknown; missing means observed absence;
+        unsafe/unreadable paths or failed probes mean unavailable. Missing system Composer
+        remains advisory and does not by itself block server creation.
+      properties:
+        project_id:
+          type: string
+          pattern: '^[0-9A-HJKMNP-TV-Z]{26}$'
+        binding_id: { type: integer, minimum: 1 }
+        composer_allow_phar:
+          type: boolean
+          description: Effective binding permission, present only when a binding was resolved.
+        phar_status:
+          type: string
+          enum: [ unknown, present, missing, unavailable ]
+        phar_relative_path:
+          type: string
+          enum: [ .dep/composer.phar ]
+        checked_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Actual PHAR probe timestamp; null when no binding probe was performed.
+        error_code:
+          type: string
+          enum: [ phar_unreadable, phar_symlink, phar_parent_unsafe, probe_timeout, probe_unavailable ]
+
+    ComposerRuntimeErrorCode:
+      type: string
+      description: Safe actionable target Composer failure; raw command output, paths and credentials are omitted.
+      enum:
+        - php_unavailable
+        - php_unusable
+        - composer_unavailable
+        - composer_system_unusable
+        - composer_phar_invalid
+        - composer_phar_unreadable
+        - composer_phar_unsafe
+        - composer_download_tool_missing
+        - composer_download_timeout
+        - composer_download_tls
+        - composer_download_http
+        - composer_download_failed
+        - composer_checksum_invalid
+        - composer_installer_failed
+        - composer_publish_failed
+        - composer_install_failed
 
     DeploymentCapabilityPreflightParticipant:
 

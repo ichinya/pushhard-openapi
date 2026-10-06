@@ -84,7 +84,7 @@ const context = schema(spec, 'ServerCapabilityCheckContext')
 assertClosedObject(context, 'ServerCapabilityCheckContext')
 equal(
   propertyNames(context),
-  ['build_server_id', 'image_transport', 'recipe', 'server_role', 'target_server_id'],
+  ['binding_id', 'build_server_id', 'image_transport', 'project_id', 'recipe', 'server_role', 'target_server_id'],
   'capability context exposes unexpected fields',
 )
 equal(
@@ -964,6 +964,25 @@ invariant(new RegExp(script.pattern).test('printf ok\nexit 1') && !new RegExp(sc
 for (const field of ['before_symlink_cmd', 'stop_cmd', 'after_symlink_cmd', 'start_cmd', 'restart_cmd']) invariant(options.properties[field].deprecated === true, 'legacy aliases must remain explicitly deprecated')
 for (const field of ['compose_file', 'backup_policy', 'backup_type', 'backup_retention_days', 'backup_database', 'backup_credentials_file', 'migration_policy', 'migration_down_command', 'critical_changed_files']) invariant(options.properties[field], 'known recipe-specific option removed')
 const lifecycle = schema(spec, 'DeploymentExecutionPlan').properties.lifecycle.properties
+invariant(options.properties.composer_allow_phar.type === 'boolean' && !options.properties.composer_allow_phar.nullable, 'Composer permission must be a strict non-null boolean')
+invariant(!options.required?.includes('composer_allow_phar') && !Object.hasOwn(options.properties.composer_allow_phar, 'default'), 'Composer permission remains optional with recipe-specific defaults')
+invariant(context.properties.project_id.pattern === '^[0-9A-HJKMNP-TV-Z]{26}$', 'binding context must use project PublicId')
+invariant(context.properties.binding_id.type === 'integer' && context.properties.binding_id.minimum === 1, 'binding context requires positive binding identity')
+invariant(lifecycle.composer_allow_phar.type === 'boolean', 'resolved Composer policy must remain boolean')
+equal(lifecycle.composer_source.enum, ['system', 'phar', 'skipped'], 'measured Composer source must remain bounded')
+invariant(lifecycle.composer_version.maxLength === 64, 'Composer version must remain bounded')
+equal(lifecycle.composer_phar_relative_path.enum, ['.dep/composer.phar'], 'managed Composer path must remain fixed')
+const bindingComposer = schema(spec, 'BindingComposerAdvisory')
+assertClosedObject(bindingComposer, 'BindingComposerAdvisory')
+equal(bindingComposer.required, ['phar_status', 'phar_relative_path', 'checked_at'], 'PHAR advisory provenance must be complete')
+equal(bindingComposer.properties.phar_status.enum, ['unknown', 'present', 'missing', 'unavailable'], 'PHAR advisory states must remain distinct')
+equal(bindingComposer.properties.phar_relative_path.enum, ['.dep/composer.phar'], 'PHAR advisory cannot accept arbitrary paths')
+invariant(bindingComposer.properties.checked_at.nullable === true, 'unprobed PHAR advisory must not invent a timestamp')
+equal(check.properties.binding_composer, { $ref: '#/components/schemas/BindingComposerAdvisory' }, 'binding advisory must use the canonical closed schema')
+for (const field of ['path', 'deploy_path', 'command', 'stdout', 'stderr', 'host', 'user', 'credentials']) invariant(!bindingComposer.properties[field], 'PHAR advisory must not expose sensitive or arbitrary input')
+const composerErrors = schema(spec, 'ComposerRuntimeErrorCode')
+for (const code of ['php_unavailable', 'php_unusable', 'composer_unavailable', 'composer_phar_invalid', 'composer_checksum_invalid', 'composer_installer_failed', 'composer_install_failed']) invariant(composerErrors.enum.includes(code), 'Composer resolution/bootstrap/install failures must remain distinguishable')
+equal(lifecycle.composer_error_code, { $ref: '#/components/schemas/ComposerRuntimeErrorCode' }, 'Composer failures must use the canonical bounded enum')
 for (const field of ['has_before_activate_cmd', 'has_after_activate_cmd', 'has_health_check_cmd', 'shared_dirs_count', 'shared_files_count', 'writable_dirs_count']) invariant(lifecycle[field], 'v3 safe lifecycle field missing')
 for (const field of ['build_cmd', 'test_cmd', 'migrate_cmd', 'before_activate_cmd', 'after_activate_cmd', 'health_check_cmd']) invariant(!lifecycle[field], 'script leaked into public lifecycle')
 const responseDeployment = schema(spec, 'DeploymentSummary')
