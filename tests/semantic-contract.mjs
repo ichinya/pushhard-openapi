@@ -988,6 +988,60 @@ for (const field of ['build_cmd', 'test_cmd', 'migrate_cmd', 'before_activate_cm
 const responseDeployment = schema(spec, 'DeploymentSummary')
 assertNullableResponseRef(responseDeployment.properties.project, 'deployment project', 'DeploymentProjectSummary', 'object')
 assertNullableResponseRef(responseDeployment.properties.server, 'deployment server', 'ServerSummary', 'object')
+
+// #29 output-only contract. Expectations come from the frozen Task 1 literals,
+// independently of the schema: an enum/type/bound/required drift breaks callers
+// accepting old, null, or actionable deployment responses.
+const diagnosisCodes = [
+  'missing_rsync',
+  'disk_full',
+  'ssh_authentication',
+  'repository_access',
+  'deployment_locked',
+  null,
+]
+const diagnosisBounds = { error_code: 64, error_summary: 500, error_hint: 1000 }
+const recentDeployment = schema(spec, 'ServerDetailDeployment')
+for (const [name, value] of [
+  ['DeploymentSummary', responseDeployment],
+  ['ServerDetailDeployment', recentDeployment],
+]) {
+  for (const [field, bound] of Object.entries(diagnosisBounds)) {
+    const property = value.properties?.[field]
+    invariant(property?.type === 'string' && property.nullable === true, `${name}.${field} must accept strings and null`)
+    invariant(property.readOnly === true, `${name}.${field} must remain output-only`)
+    invariant(property.maxLength === bound, `${name}.${field} bound drifted`)
+    invariant(!value.required?.includes(field), `${name}.${field} must remain optional for old responses`)
+  }
+  equal(value.properties.error_code.enum, diagnosisCodes, `${name}.error_code must allow exactly five codes and actual null`)
+  equal(value.properties.error_message, { type: 'string', nullable: true }, `${name} raw error_message contract must remain unchanged`)
+  invariant(!value.properties.log, `${name} must remain log-free`)
+}
+for (const field of Object.keys(diagnosisBounds)) {
+  equal(recentDeployment.properties[field], responseDeployment.properties[field], `recent ${field} contract must match summary`)
+}
+invariant(!recentDeployment.properties.meta, 'server recent must not expose raw metadata')
+const deploymentMeta = responseDeployment.properties.meta
+invariant(deploymentMeta.type === 'object' && deploymentMeta.nullable === true, 'existing deployment meta must accept actual null')
+invariant(deploymentMeta.additionalProperties === true, 'existing unrelated deployment metadata remains compatible')
+equal(deploymentMeta.properties.execution_plan, { $ref: '#/components/schemas/DeploymentExecutionPlan' }, 'execution plan metadata ref must remain unchanged')
+const responseDetail = schema(spec, 'DeploymentDetail')
+equal(responseDetail.allOf?.[0], { $ref: '#/components/schemas/DeploymentSummary' }, 'detail must inherit the summary diagnosis contract')
+const detailExtension = responseDetail.allOf?.[1]
+equal(propertyNames(detailExtension), ['log'], 'detail extension must retain only the raw log without diagnosis overrides')
+invariant(detailExtension.properties.log.type === 'string' && detailExtension.properties.log.nullable === true, 'raw detail log contract must remain nullable string')
+invariant(!detailExtension.properties.log.maxLength, 'raw persisted log must not be truncated by the diagnosis bound')
+for (const operationId of ['getProjectDeployment', 'getGlobalDeployment']) {
+  const detailOperation = findOperationById(operationId)
+  equal(detailOperation?.responses?.['200']?.content?.['application/json']?.schema,
+    { $ref: '#/components/schemas/DeploymentDetail' }, `${operationId} must expose the inherited detail diagnosis`)
+}
+const serverDetail = schema(spec, 'ServerDetail')
+equal(serverDetail.allOf?.[1]?.properties?.recent_deployments?.items,
+  { $ref: '#/components/schemas/ServerDetailDeployment' }, 'server recent must use its separate diagnosis projection')
+equal(findOperationById('getServer')?.responses?.['200']?.content?.['application/json']?.schema,
+  { $ref: '#/components/schemas/ServerDetail' }, 'getServer must expose the recent deployment projection')
+
 const responseBackup = schema(spec, 'PreDeployBackupExecutionSummary')
 assertNullableResponseRef(responseBackup.properties.type, 'backup type', 'PreDeployBackupType', 'string')
 invariant(responseBackup.required.includes('credentials_file_configured'), 'safe backup configuration flag must remain required')

@@ -1176,6 +1176,12 @@ components:
 
       type: object
 
+      description: |
+        Log-free server recent deployment projection. Diagnostics use only a valid persisted
+        diagnosis; legacy recent entries never load or parse deployment logs. Known failed
+        causes use a static Russian catalog. Unknown, ambiguous, or nonfailed entries return
+        null for all three diagnosis fields; older responses may omit these optional fields.
+
       properties:
 
         id: { type: string, description: "PublicId (ULID)" }
@@ -1197,6 +1203,28 @@ components:
         cancelled_at: { type: string, format: date-time, nullable: true }
 
         error_message: { type: string, nullable: true }
+
+        error_code:
+          type: string
+          nullable: true
+          readOnly: true
+          enum: [ missing_rsync, disk_full, ssh_authentication, repository_access, deployment_locked, null ]
+          maxLength: 64
+          description: Closed actionable cause for known failed deployments; otherwise null.
+
+        error_summary:
+          type: string
+          nullable: true
+          readOnly: true
+          maxLength: 500
+          description: Static Russian catalog summary for error_code; otherwise null. Never reflected log or exception text.
+
+        error_hint:
+          type: string
+          nullable: true
+          readOnly: true
+          maxLength: 1000
+          description: Static Russian catalog operator hint for error_code; otherwise null. Does not execute recovery commands.
 
         created_at: { type: string, format: date-time, nullable: true }
 
@@ -1601,6 +1629,10 @@ components:
       description: |
         Log-free deployment representation used by lists, nested resources, and mutation responses.
         Persisted deployment log content is available only through owner-authorized detail operations.
+        Diagnostics use only a valid persisted diagnosis, without loading or parsing logs.
+        Known failed causes use a static Russian catalog; unknown, ambiguous, or nonfailed
+        deployments return null for error_code, error_summary, and error_hint. Older responses
+        may omit these optional fields. Raw error_message and detail log remain unchanged.
 
       properties:
 
@@ -1643,8 +1675,36 @@ components:
 
         error_message: { type: string, nullable: true }
 
+        error_code:
+          type: string
+          nullable: true
+          readOnly: true
+          enum: [ missing_rsync, disk_full, ssh_authentication, repository_access, deployment_locked, null ]
+          maxLength: 64
+          description: Closed actionable cause for known failed deployments; otherwise null.
+
+        error_summary:
+          type: string
+          nullable: true
+          readOnly: true
+          maxLength: 500
+          description: Static Russian catalog summary for error_code; otherwise null. Never reflected log or exception text.
+
+        error_hint:
+          type: string
+          nullable: true
+          readOnly: true
+          maxLength: 1000
+          description: Static Russian catalog operator hint for error_code; otherwise null. Does not execute recovery commands.
+
         meta:
           type: object
+          nullable: true
+          description: |
+            Existing nullable compatibility metadata; no new storage or migration behavior.
+            When present, deployment_diagnosis is safely reconstructed from a valid closed
+            version/code/role namespace. Internal fingerprints, stored free text, raw evidence,
+            URLs, credentials, keys, and lock owners are never exposed in that namespace.
           properties:
             execution_plan: { $ref: '#/components/schemas/DeploymentExecutionPlan' }
           additionalProperties: true
@@ -1667,6 +1727,11 @@ components:
 
       description: |
         Owner-authorized deployment detail. Missing and inaccessible deployments use the same 404 response.
+        Inherits the optional diagnosis fields from DeploymentSummary. For a legacy failed
+        deployment without a valid persisted diagnosis, detail may derive a pure bounded
+        fallback from already loaded masked error_message/log after authorization (at most
+        65536 bytes of primary output). Reads never change stored metadata, logs, timestamps,
+        status, or audit records. Uncertain primary/cleanup provenance returns three nulls.
 
       allOf:
 

@@ -3,6 +3,30 @@ Single source of truth for api (PHP), web (Vue), and MCP server.
 
 Spec-first contract: changes to the API must update this spec FIRST.
 
+Deployment responses expose optional nullable `error_code`, `error_summary` (up to
+500 characters), and `error_hint` (up to 1000 characters). Codes are limited to
+`missing_rsync`, `disk_full`, `ssh_authentication`, `repository_access`, and
+`deployment_locked` (up to 64 characters), plus actual `null`. Known failed causes
+use a static Russian catalog; unknown, ambiguous, and nonfailed deployments return
+three nulls. Consumers must also accept older responses that omit these fields.
+Hints are operator advice; lock advice asks operators to check active deployments
+and wait before considering manual unlock. No recovery commands are executed.
+
+`DeploymentDetail`, including MCP `getGlobalDeployment`, inherits the summary
+contract; server recent deployments use the same fields in a separate projection.
+Summaries and recent entries use valid persisted diagnoses without reading logs.
+Only authorized legacy detail may use a pure fallback from already loaded masked
+error/log with a 65536-byte primary-output bound; uncertain cleanup provenance
+returns null. Reads preserve storage and audit state. Raw `error_message` and
+detail `log` remain available unchanged. Existing `meta` may be null; its optional
+diagnosis namespace is reconstructed from closed version/code/role values without
+internal fingerprints, stored free text, or reflected evidence.
+
+This output-only schema change preserves the recipe execution contract identity
+`b520965c3eb576a8a3b909baea83326d2fb4c418` and resolver version 2 for existing v3
+queued jobs, release receipts, and measured Composer metadata. A new OpenAPI Git
+revision does not change recipe, SSH, or PHAR policy.
+
 All five deployment recipes use the closed `ServerBindingRecipeOptions` object.
 OpenAPI defines types/bounds; the API validates applicability against the effective
 recipe under the binding lock, including options-only PATCH requests.
