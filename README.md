@@ -3,6 +3,51 @@ Single source of truth for api (PHP), web (Vue), and MCP server.
 
 Spec-first contract: changes to the API must update this spec FIRST.
 
+`POST /projects/{project}/servers/{binding_id}/commands/validate`
+(`validateProjectServerCommands`) describes a nonpersisting preview for an existing
+binding, limited to 10 requests per minute. The selected workspace must allow
+resource editing (Admin or DevOps) and the PAT must allow `admin`; wildcard PATs
+still respect workspace roles. Session calls use the same role gate. Authorization
+and binding ownership precede SSH/source probes; missing and inaccessible bindings
+share a safe 404.
+
+The optional closed draft accepts only `recipe`, `recipe_options`,
+`build_server_id`, `source_ref`, `deploy_path`, and `php_path`. Omission uses current
+configured values. An options object replaces the whole object, without merging;
+`{}` uses release defaults and `null` resets release options. Compose still
+requires `compose_file`. Null clears the build server or PHP override; null source
+ref uses the project's branch. Recipe and deployment path cannot be null. Existing
+recipe applicability, field bounds and binding validation remain authoritative.
+Preview executes no submitted scripts, saves no draft or inventory, creates no
+deployment/audit, and grants no deployment permission.
+
+`CommandValidationReport` is a closed version-1 report with `ready`, `warning`, or
+`blocked` aggregate status, a timestamp, a 64-hex input signature, nullable exact
+40-hex source revision, and at most 100 checks. Each check identifies an existing
+command field and nullable Compose list index, phase, actual execution role
+(`target`, `build`, `container`, or `unknown`), kind, status and closed code.
+Static Russian summaries/hints are limited to 500/1000 characters; nullable
+version tokens are validated and limited to 64 characters. No scripts, arbitrary
+binary names, argv, policy text, URLs, credentials or remote output are returned.
+Sudo authentication is explicit (`not_required`, `required`, or `unverified`);
+non-sudo checks use null. Policy listing permission and authentication readiness
+are separate: an allowed listing does not prove noninteractive execution readiness.
+Partial/unsupported context and exhausted budgets remain explicit diagnostics.
+The signature establishes freshness only; runtime must recheck before commands.
+
+Deployment `meta.command_validation` optionally exposes the same reconstructed
+safe report or null, inherited by deployment detail; older absent/null metadata
+remains compatible. It is independent of the five-code diagnosis below. Existing
+binding `lifecycle_command_warnings` describes limited cached binary advice, which
+can be empty for unsupported commands or unavailable inventory and historically
+uses Node facts for npm/npx. It grants no command or deployment authorization.
+The seven capability IDs and the recipe execution identity below remain unchanged.
+
+Semantic tests freeze the request/auth/nullable/closed-result shape. Their exported
+`commandValidationFixtures` are independent literal positive/hostile cases for a
+JSON Schema validator against a freshly bundled document; they do not assert
+runtime authorization, storage purity, SSH safety or hosted acceptance.
+
 Deployment responses expose optional nullable `error_code`, `error_summary` (up to
 500 characters), and `error_hint` (up to 1000 characters). Codes are limited to
 `missing_rsync`, `disk_full`, `ssh_authentication`, `repository_access`, and

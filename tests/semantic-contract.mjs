@@ -437,6 +437,7 @@ const resourceOps = [
   'upsertProjectWebhook', 'upsertProjectWebhookPut', 'listProjectWebhooks',
   'createProjectProviderWebhook', 'updateProjectProviderWebhook', 'deleteProjectProviderWebhook',
   'listProjectServers', 'createProjectServerBinding', 'updateProjectServerBinding', 'deleteProjectServerBinding',
+  'validateProjectServerCommands',
   'mutateProjectServerEnv', 'updateProjectServerEnv', 'listAvailableServers',
   'triggerProjectDeploy', 'previewProjectDeploymentVariables', 'listProjectDeployments',
   'getProjectDeployment', 'cancelProjectDeployment',
@@ -736,6 +737,7 @@ const legacyRoleMatrix = {
   createProjectServerBinding: ['admin', 'devops'],
   updateProjectServerBinding: ['admin', 'devops'],
   deleteProjectServerBinding: ['admin', 'devops'],
+  validateProjectServerCommands: ['admin', 'devops'],
   mutateProjectServerEnv: ['admin', 'devops'],
   updateProjectServerEnv: ['admin', 'devops'],
   listAvailableServers: ['admin', 'devops', 'viewer'],
@@ -1057,6 +1059,142 @@ assertNullableResponseEnum(schema(spec, 'WorkspaceAuditEvent').properties.resour
 const releaseDisabledReason = spec.paths['/projects/{project}/releases'].get.responses['200'].content['application/json'].schema.properties.data.items.properties.disabled_reason
 assertNullableResponseEnum(releaseDisabledReason, 'release disabled reason', ['deployment_not_successful', 'deploy_path_invalid', 'inventory_unavailable', 'inventory_timeout', 'inventory_invalid', 'current_release_unknown', 'current_release_unrecorded', 'release_missing', 'already_current', 'rollback_unsupported', 'release_compatibility_unknown', 'release_environment_mismatch', 'release_configuration_mismatch'])
 
+// #13 typed preview: literal expectations are independent of schema builders.
+const commandPreview = spec.paths?.['/projects/{project}/servers/{binding_id}/commands/validate']?.post
+invariant(commandPreview?.operationId === 'validateProjectServerCommands', 'binding command preview operation is required')
+equal(commandPreview['x-required-roles'], ['admin', 'devops'], 'preview requires the existing resource-edit role')
+invariant(commandPreview['x-required-ability'] === 'admin', 'preview requires admin PAT ability intersected with role')
+equal(commandPreview.security, [{ sanctum: [] }], 'preview uses existing Sanctum authentication')
+invariant(commandPreview.requestBody?.required === false, 'current-binding preview body must be optional')
+equal(commandPreview.requestBody.content['application/json'].schema, { $ref: '#/components/schemas/ValidateProjectServerCommandsRequest' }, 'preview must use its closed draft')
+equal(commandPreview.responses['200'].content['application/json'].schema, { $ref: '#/components/schemas/CommandValidationReport' }, 'preview response must be the safe report')
+for (const status of ['401', '403', '404', '422', '429']) invariant(commandPreview.responses[status], `preview response ${status} is required`)
+equal(commandPreview.responses['404'].content['application/json'].schema, { $ref: '#/components/schemas/WorkspaceError' }, 'preview safe404 envelope must not disclose binding ownership')
+const previewBindingId = commandPreview.parameters.find(p => p.name === 'binding_id')
+invariant(previewBindingId?.in === 'path' && previewBindingId.required && previewBindingId.schema.type === 'integer' && previewBindingId.schema.minimum === 1, 'preview must address an existing positive pivot identity')
+for (const text of ['before SSH or source probes', '10 requests per minute', 'wildcard PAT never bypasses', 'never executes submitted scripts']) invariant(commandPreview.description.includes(text), `preview boundary missing: ${text}`)
+
+const commandDraft = schema(spec, 'ValidateProjectServerCommandsRequest')
+assertClosedObject(commandDraft, 'ValidateProjectServerCommandsRequest')
+equal(propertyNames(commandDraft), ['build_server_id', 'deploy_path', 'php_path', 'recipe', 'recipe_options', 'source_ref'], 'preview may accept only current-binding draft fields')
+invariant(!commandDraft.required && !commandDraft.minProperties, 'empty current-binding draft must be accepted')
+equal(commandDraft.properties.recipe, { $ref: '#/components/schemas/ServerBindingRecipe' }, 'preview recipe must reuse the existing recipe enum')
+assertNullableResponseRef(commandDraft.properties.recipe_options, 'draft options', 'ServerBindingRecipeOptions', 'object')
+for (const text of ['Omission of any field uses its current configured value', 'whole', 'never a merge', 'null resets release', 'Compose', 'recipe and deploy_path cannot be null']) invariant(commandDraft.description.includes(text), `draft replacement/reset semantics missing: ${text}`)
+for (const [field, maxLength, nullable] of [['deploy_path', 500, false], ['php_path', 255, true], ['source_ref', 255, true], ['build_server_id', 26, true]]) {
+  const prop = commandDraft.properties[field]
+  invariant(prop.type === 'string' && prop.maxLength === maxLength && Boolean(prop.nullable) === nullable, `draft ${field} must retain bounded reset semantics`)
+  invariant(prop.description.includes('Omission'), `draft ${field} must explain omission`)
+}
+invariant(commandDraft.properties.build_server_id.pattern === ULID_PATTERN, 'draft build server must be a public ULID')
+
+const commandFields = ['build_cmd', 'test_cmd', 'before_activate_cmd', 'after_activate_cmd', 'health_check_cmd', 'migrate_cmd', 'before_symlink_cmd', 'stop_cmd', 'after_symlink_cmd', 'start_cmd', 'restart_cmd', 'validation_commands', 'test_commands', 'smoke_commands', 'migration_command', 'migration_down_command', null]
+const commandCodes = ['binary_present', 'binary_missing', 'binary_unverified', 'version_compatible', 'version_mismatch', 'version_unknown', 'sudo_policy_allowed', 'sudo_policy_denied', 'sudo_permission_unverified', 'sudo_authentication_unverified', 'dangerous_command', 'risky_command', 'unsupported_command', 'context_unknown', 'check_limit_exceeded', 'input_stale', 'probe_unavailable', 'source_unavailable']
+const commandRoles = ['target', 'build', 'container', 'unknown']
+const commandKinds = ['binary', 'version', 'sudo', 'safety', 'context']
+const commandPhases = ['build', 'test', 'before_activate', 'migrate', 'after_activate', 'health_check', 'validation', 'smoke', 'migration_down', 'unknown']
+equal(schema(spec, 'CommandValidationField').enum, commandFields, 'command fields must be the closed existing field catalog plus actual null')
+invariant(schema(spec, 'CommandValidationField').nullable === true, 'report-level field must accept actual null')
+equal(schema(spec, 'CommandValidationCode').enum, commandCodes, 'command code catalog must remain closed; no source_unknown')
+const commandVersion = schema(spec, 'CommandValidationVersion')
+invariant(commandVersion.type === 'string' && commandVersion.nullable === true && commandVersion.minLength === 1 && commandVersion.maxLength === 64 && commandVersion.pattern, 'version must be a bounded validated token or actual null')
+const commandCheck = schema(spec, 'CommandValidationCheck')
+assertClosedObject(commandCheck, 'CommandValidationCheck')
+const checkFields = ['authentication', 'code', 'field', 'hint', 'index', 'kind', 'observed_version', 'phase', 'required_version', 'role', 'status', 'summary']
+equal(propertyNames(commandCheck), checkFields, 'check may expose only the frozen safe field set')
+equal([...commandCheck.required].sort(), checkFields, 'nullable check values must be explicit rather than silently omitted')
+equal(commandCheck.properties.field, { $ref: '#/components/schemas/CommandValidationField' }, 'check field must use canonical enum')
+equal(commandCheck.properties.code, { $ref: '#/components/schemas/CommandValidationCode' }, 'check code must use canonical enum')
+equal(commandCheck.properties.phase.enum, commandPhases, 'check phase must remain closed')
+equal(commandCheck.properties.role.enum, commandRoles, 'check role must retain unknown/container and separate build/target')
+equal(commandCheck.properties.kind.enum, commandKinds, 'check kind must remain closed')
+equal(commandCheck.properties.status.enum, ['pass', 'warn', 'error'], 'check status must remain closed')
+equal(commandCheck.properties.authentication.enum, ['not_required', 'required', 'unverified', null], 'policy/auth state must be explicit and separate')
+equal(commandCheck.oneOf, [
+  { properties: { kind: { enum: ['sudo'] }, authentication: { enum: ['not_required', 'required', 'unverified'] } } },
+  { properties: { kind: { enum: ['binary', 'version', 'safety', 'context'] }, authentication: { type: 'string', nullable: true, not: { type: 'string' } } } },
+], 'sudo requires a nonnull auth state; other checks require null')
+for (const field of ['observed_version', 'required_version']) equal(commandCheck.properties[field], { $ref: '#/components/schemas/CommandValidationVersion' }, `check ${field} must use the safe version token`)
+invariant(commandCheck.properties.summary.minLength === 1 && commandCheck.properties.summary.maxLength === 500, 'static summary must be nonempty and bounded500')
+invariant(commandCheck.properties.hint.nullable && commandCheck.properties.hint.maxLength === 1000, 'static hint must be nullable and bounded1000')
+equal(commandCheck.properties.index, { type: 'integer', nullable: true, minimum: 0, maximum: 49 }, 'Compose list index must be nullable and bounded0..49')
+const commandReport = schema(spec, 'CommandValidationReport')
+assertClosedObject(commandReport, 'CommandValidationReport')
+const reportFields = ['checked_at', 'checks', 'input_signature', 'source_revision', 'status', 'version']
+equal(propertyNames(commandReport), reportFields, 'report must expose only safe freshness/result fields')
+equal([...commandReport.required].sort(), reportFields, 'report must require version and current input identity')
+invariant(commandReport.readOnly === true, 'report must be output-only')
+equal(commandReport.properties.version, { type: 'integer', enum: [1] }, 'report version must be exactly1')
+equal(commandReport.properties.status.enum, ['ready', 'warning', 'blocked'], 'aggregate status must remain closed')
+invariant(commandReport.properties.checked_at.format === 'date-time', 'report must include checked timestamp')
+for (const [field, length] of [['input_signature', 64], ['source_revision', 40]]) {
+  const prop = commandReport.properties[field]
+  invariant(prop.type === 'string' && prop.minLength === length && prop.maxLength === length && prop.pattern === `^[0-9a-f]{${length}}$`, `report ${field} must be exact lowerhex${length}`)
+}
+invariant(commandReport.properties.source_revision.nullable === true && !commandReport.properties.input_signature.nullable, 'only unresolved source revision may be null')
+invariant(commandReport.properties.checks.type === 'array' && commandReport.properties.checks.maxItems === 100, 'report checks must be bounded100')
+equal(commandReport.properties.checks.items, { $ref: '#/components/schemas/CommandValidationCheck' }, 'report must use the canonical check')
+assertNullableResponseRef(deploymentMeta.properties.command_validation, 'runtime command validation', 'CommandValidationReport', 'object')
+invariant(deploymentMeta.properties.command_validation.readOnly && !deploymentMeta.required?.includes('command_validation'), 'runtime report must remain optional and output-only')
+invariant(!responseDeployment.properties.command_validation && !detailExtension.properties.command_validation, 'runtime report must use the existing meta shape')
+const cachedWarnings = responseBinding.properties.lifecycle_command_warnings
+invariant(cachedWarnings?.type === 'array' && cachedWarnings.description.includes('not a fresh command-validation report'), 'cached warning must be documented as limited advice')
+equal(propertyNames(cachedWarnings.items), ['binary', 'capability', 'phase'], 'cached advisory wire shape must stay compatible')
+
+// Literal fixture inputs and expected booleans do not come from the schema.
+// A validator can import these cases after setting argv[2] to the current bundle.
+export const commandValidationFixtures = []
+const cvFixture = (schema, label, value, expected) => commandValidationFixtures.push({ schema, label, value, expected })
+const draftFixture = (label, value, expected) => cvFixture('ValidateProjectServerCommandsRequest', label, value, expected)
+for (const value of [{}, { recipe_options: null }, { recipe_options: {} }, { php_path: null, build_server_id: null, source_ref: null }, { recipe: 'go', source_ref: 'refs/heads/main', deploy_path: '/srv/app' }, { recipe_options: { build_cmd: null, stop_cmd: null, composer_allow_phar: false, frontend_pregenerated: false } }, { recipe_options: { build_cmd: 'printf ok\ntrue', validation_commands: ['printf ok'] }, php_path: '/usr/bin/php', build_server_id: '01J00000000000000000000000' }]) draftFixture('accepted omission/reset/replacement/false flag draft', value, true)
+for (const value of [null, [], false, { recipe: null }, { deploy_path: null }, { deploy_path: '' }, { recipe_options: [] }, { recipe_options: { build_cmd: false } }, { recipe_options: { stop_cmd: false } }, { recipe_options: { composer_allow_phar: null } }, { recipe_options: { build_cmd: 'bad\u0000' } }, { recipe_options: { old_option: true } }, { recipe: 'exec' }, { source_ref: 'bad ref' }, { source_ref: '' }, { build_server_id: 1 }, { build_server_id: 'foreign' }]) draftFixture('reject invalid draft type/field/null/command', value, false)
+for (const field of ['command', 'commands', 'argv', 'server_id', 'workspace_id', 'permission', 'token', 'input_signature', 'command_validation']) draftFixture('reject arbitrary exec/authority selector '+field, { [field]: 'arbitrary' }, false)
+for (const [field, limit] of [['php_path', 255], ['deploy_path', 500], ['source_ref', 255]]) {
+  draftFixture('accept exact bound '+field, { [field]: 'x'.repeat(limit) }, true)
+  draftFixture('reject exceeded bound '+field, { [field]: 'x'.repeat(limit + 1) }, false)
+}
+const literalCheck = { field: 'build_cmd', index: null, phase: 'build', role: 'build', kind: 'binary', status: 'pass', code: 'binary_present', summary: '\u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430', hint: null, observed_version: null, required_version: null, authentication: null }
+const checkFixture = (label, value, expected) => cvFixture('CommandValidationCheck', label, value, expected)
+checkFixture('complete binary check with explicit null values', literalCheck, true)
+for (const role of ['target', 'build', 'container', 'unknown']) checkFixture('actual role '+role, { ...literalCheck, role }, true)
+for (const phase of ['build', 'test', 'before_activate', 'migrate', 'after_activate', 'health_check', 'validation', 'smoke', 'migration_down', 'unknown']) checkFixture('closed phase '+phase, { ...literalCheck, phase }, true)
+for (const field of ['build_cmd', 'test_cmd', 'before_activate_cmd', 'after_activate_cmd', 'health_check_cmd', 'migrate_cmd', 'before_symlink_cmd', 'stop_cmd', 'after_symlink_cmd', 'start_cmd', 'restart_cmd', 'migration_command', 'migration_down_command', null]) checkFixture('existing scalar/report field', { ...literalCheck, field }, true)
+for (const field of ['validation_commands', 'test_commands', 'smoke_commands']) {
+  for (const index of [0, 49]) checkFixture('Compose field/list position', { ...literalCheck, field, index }, true)
+  for (const index of [null, -1, 50, 1.5, '0']) checkFixture('reject invalid Compose position', { ...literalCheck, field, index }, false)
+}
+for (const authentication of ['not_required', 'required', 'unverified']) checkFixture('sudo policy authentication '+authentication, { ...literalCheck, kind: 'sudo', code: 'sudo_policy_allowed', authentication }, true)
+checkFixture('sudo must not omit authentication', { ...literalCheck, kind: 'sudo', authentication: null }, false)
+checkFixture('non-sudo must not claim authentication', { ...literalCheck, authentication: 'not_required' }, false)
+for (const [field, value] of [['field', 'command'], ['role', 'runner'], ['phase', 'exec'], ['kind', 'permission'], ['status', 'ready'], ['code', 'source_unknown'], ['authentication', 'passwordless'], ['index', 0]]) checkFixture('reject closed wire drift '+field, { ...literalCheck, [field]: value }, false)
+for (const field of ['field', 'index', 'phase', 'role', 'kind', 'status', 'code', 'summary', 'hint', 'observed_version', 'required_version', 'authentication']) { const value = { ...literalCheck }; delete value[field]; checkFixture('reject missing '+field, value, false) }
+for (const field of ['command', 'binary', 'argv', 'stdout', 'policy', 'url', 'credentials']) checkFixture('reject reflected field '+field, { ...literalCheck, [field]: 'private' }, false)
+for (const [field, limit] of [['summary', 500], ['hint', 1000]]) {
+  for (const char of ['x', '\u044f', '\u{1f642}']) {
+    checkFixture('accept Unicode text bound '+field, { ...literalCheck, [field]: char.repeat(limit) }, true)
+    checkFixture('reject exceeded Unicode text bound '+field, { ...literalCheck, [field]: char.repeat(limit + 1) }, false)
+  }
+}
+for (const field of ['observed_version', 'required_version']) {
+  for (const value of [null, '1.26.5', '1.27rc1', '1.26beta2', '8.5.0', '22.0.0-rc.1', '1.2+'+'a'.repeat(60)]) checkFixture('accepted normalized nullable version', { ...literalCheck, [field]: value }, true)
+  for (const value of ['', 'go1.26.5', 'devel', '1.2\nsecret', 'https://example.test', '1.2+'+'a'.repeat(61), false, {}]) checkFixture('reject raw/overbound version', { ...literalCheck, [field]: value }, false)
+}
+const literalReport = { version: 1, status: 'ready', checked_at: '2026-10-07T12:00:00Z', input_signature: 'a'.repeat(64), source_revision: null, checks: [literalCheck] }
+const reportFixture = (label, value, expected) => cvFixture('CommandValidationReport', label, value, expected)
+reportFixture('ready complete report', literalReport, true)
+reportFixture('exact resolved source report', { ...literalReport, source_revision: 'b'.repeat(40) }, true)
+reportFixture('empty ready report', { ...literalReport, checks: [] }, true)
+reportFixture('maximum100 checks', { ...literalReport, checks: Array.from({ length: 100 }, () => ({ ...literalCheck })) }, true)
+reportFixture('reject101 checks', { ...literalReport, checks: Array.from({ length: 101 }, () => ({ ...literalCheck })) }, false)
+for (const [status, checks, expected] of [['warning', [{ ...literalCheck, status: 'warn', code: 'binary_unverified' }], true], ['blocked', [{ ...literalCheck, status: 'error', code: 'dangerous_command', kind: 'safety' }], true], ['ready', [{ ...literalCheck, status: 'warn' }], false], ['warning', [literalCheck], false], ['warning', [{ ...literalCheck, status: 'error' }], false], ['blocked', [literalCheck], false], ['blocked', [], false]]) reportFixture('aggregate status versus check severity', { ...literalReport, status, checks }, expected)
+for (const field of ['version', 'status', 'checked_at', 'input_signature', 'source_revision', 'checks']) { const value = { ...literalReport }; delete value[field]; reportFixture('reject missing report '+field, value, false) }
+for (const [field, value] of [['version', 2], ['version', '1'], ['status', 'unknown'], ['checked_at', 'yesterday'], ['input_signature', null], ['input_signature', 'A'.repeat(64)], ['input_signature', 'a'.repeat(63)], ['input_signature', 'a'.repeat(65)], ['source_revision', 'b'.repeat(39)], ['source_revision', 'B'.repeat(40)], ['checks', null]]) reportFixture('reject malformed report '+field, { ...literalReport, [field]: value }, false)
+for (const field of ['command', 'permission', 'token', 'stdout', 'credentials']) reportFixture('reject report leak '+field, { ...literalReport, [field]: 'private' }, false)
+for (const schemaName of ['DeploymentSummary', 'DeploymentDetail']) {
+  for (const value of [{}, { meta: null }, { meta: {} }, { meta: { command_validation: null } }, { meta: { command_validation: literalReport } }]) cvFixture(schemaName, 'old/null/safe runtime report', value, true)
+  for (const value of [{}, false, [], { ...literalReport, command: 'private' }, { ...literalReport, input_signature: 'short' }]) cvFixture(schemaName, 'reject invalid runtime namespace', { meta: { command_validation: value } }, false)
+}
+
 log('info', 'semantic_contract_passed', {
   operation_id: operation.operationId,
   capability_count: capabilityIds.enum.length,
@@ -1067,4 +1205,5 @@ log('info', 'semantic_contract_passed', {
   closed_request_bodies: closedRequestBodies,
   audit_allowlist_fields: propertyNames(auditEvent).length,
   audit_diff_allowlist_fields: propertyNames(auditDiff).length,
+  command_validation_fixture_count: commandValidationFixtures.length,
 })

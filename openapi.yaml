@@ -388,6 +388,163 @@ components:
             operators, substitutions, redirects, environment assignments, and control
             characters are rejected. Command text is never copied into deployment metadata.
 
+    ValidateProjectServerCommandsRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        Optional nonpersisting draft overrides for this existing project-server binding only.
+        Omission of any field uses its current configured value. recipe_options is a whole
+        object replacement, never a merge: {} uses release defaults and null resets release
+        options; Compose still requires compose_file and rejects null/empty options.
+        Explicit null clears build_server_id or php_path; null source_ref uses the project's
+        configured branch. recipe and deploy_path cannot be null. Recipe applicability,
+        build-server ownership/type and existing binding validation apply to the effective
+        draft. No scripts are executed and no binding, inventory, deployment or audit is written.
+      properties:
+        recipe: { $ref: '#/components/schemas/ServerBindingRecipe' }
+        recipe_options:
+          description: Omission preserves current options; an object replaces the whole object, never merges it. null resets release options, but Compose requires compose_file.
+          oneOf:
+            - $ref: '#/components/schemas/ServerBindingRecipeOptions'
+            - { type: object, nullable: true, not: { type: object } }
+        build_server_id:
+          type: string
+          nullable: true
+          pattern: '^[0-9A-HJKMNP-TV-Z]{26}$'
+          minLength: 26
+          maxLength: 26
+          description: Omission uses the current build server; null clears it. Must be an accessible build server in the selected workspace; recipe applicability still applies.
+        source_ref:
+          type: string
+          nullable: true
+          minLength: 1
+          maxLength: 255
+          pattern: '^[^\u0000-\u0020\u007f]+$'
+          description: Omission uses the current project source ref; null resets to the configured project branch. Resolve an immutable source revision without executing repository scripts.
+        deploy_path:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: Omission uses the current binding deployment path. Existing binding/path validation applies; null is invalid.
+        php_path:
+          type: string
+          nullable: true
+          maxLength: 255
+          description: Omission uses the current binding PHP selector; null clears the override using existing binding reset semantics.
+
+    CommandValidationField:
+      type: string
+      nullable: true
+      enum: [ build_cmd, test_cmd, before_activate_cmd, after_activate_cmd, health_check_cmd, migrate_cmd, before_symlink_cmd, stop_cmd, after_symlink_cmd, start_cmd, restart_cmd, validation_commands, test_commands, smoke_commands, migration_command, migration_down_command, null ]
+      description: Existing configured command field, including aliases and effective defaults; null identifies a report-level diagnostic. Never contains command text.
+
+    CommandValidationCode:
+      type: string
+      maxLength: 64
+      enum: [ binary_present, binary_missing, binary_unverified, version_compatible, version_mismatch, version_unknown, sudo_policy_allowed, sudo_policy_denied, sudo_permission_unverified, sudo_authentication_unverified, dangerous_command, risky_command, unsupported_command, context_unknown, check_limit_exceeded, input_stale, probe_unavailable, source_unavailable ]
+
+    CommandValidationVersion:
+      type: string
+      nullable: true
+      minLength: 1
+      maxLength: 64
+      pattern: '^[0-9]+(?:\.[0-9]+){1,3}(?:(?:alpha|beta|rc)[0-9]+|[-+][0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$'
+      description: Validated normalized numeric version token only; null means unknown or not applicable. Never raw probe output or an invented requirement.
+
+    CommandValidationCheck:
+      type: object
+      additionalProperties: false
+      required: [ field, index, phase, role, kind, status, code, summary, hint, observed_version, required_version, authentication ]
+      description: |
+        One bounded public check reconstructed from closed values and a static Russian catalog.
+        field identifies an existing configured/effective command; index is its zero-based
+        Compose list position (0..49), or null for a scalar or report-level diagnostic.
+        role is the actual target/build/container execution context, or unknown; facts from
+        one role never certify another. summary/hint never reflect scripts, argv, URLs, policy,
+        credentials or remote output. Sudo policy permission and authentication are separate:
+        not_required means the parsed rule does not require authentication, required means
+        it does, and unverified means this cannot be established. Even an allowed listing
+        does not prove noninteractive execution readiness. Non-sudo authentication is null.
+      properties:
+        field: { $ref: '#/components/schemas/CommandValidationField' }
+        index: { type: integer, nullable: true, minimum: 0, maximum: 49 }
+        phase:
+          type: string
+          enum: [ build, test, before_activate, migrate, after_activate, health_check, validation, smoke, migration_down, unknown ]
+        role: { type: string, enum: [ target, build, container, unknown ] }
+        kind: { type: string, enum: [ binary, version, sudo, safety, context ] }
+        status: { type: string, enum: [ pass, warn, error ] }
+        code: { $ref: '#/components/schemas/CommandValidationCode' }
+        summary: { type: string, minLength: 1, maxLength: 500, description: Static Russian catalog summary; no reflected input or output. }
+        hint: { type: string, nullable: true, maxLength: 1000, description: Static Russian catalog advice or null; no recovery command is executed. }
+        observed_version: { $ref: '#/components/schemas/CommandValidationVersion' }
+        required_version: { $ref: '#/components/schemas/CommandValidationVersion' }
+        authentication: { type: string, nullable: true, enum: [ not_required, required, unverified, null ] }
+      oneOf:
+        - properties:
+            kind: { enum: [ sudo ] }
+            authentication: { enum: [ not_required, required, unverified ] }
+        - properties:
+            kind: { enum: [ binary, version, safety, context ] }
+            authentication: { type: string, nullable: true, not: { type: string } }
+      allOf:
+        - oneOf:
+            - properties:
+                field: { enum: [ validation_commands, test_commands, smoke_commands ] }
+                index: { type: integer, minimum: 0, maximum: 49 }
+            - properties:
+                field: { enum: [ build_cmd, test_cmd, before_activate_cmd, after_activate_cmd, health_check_cmd, migrate_cmd, before_symlink_cmd, stop_cmd, after_symlink_cmd, start_cmd, restart_cmd, migration_command, migration_down_command, null ] }
+                index: { type: integer, nullable: true, not: { type: integer } }
+
+    CommandValidationReport:
+      type: object
+      additionalProperties: false
+      readOnly: true
+      required: [ version, status, checked_at, input_signature, source_revision, checks ]
+      description: |
+        Versioned safe dry-run/runtime report. ready means no warning/error among the checks;
+        warning means at least one warning and no error; blocked means at least one error.
+        Partial/unsupported context, unavailable source/probe and exhausted budgets are explicit
+        diagnostics, never fabricated permission or compatibility. At most 100 checks; reserve
+        check_limit_exceeded on exhaustion and preserve any known blocker. input_signature binds
+        the current draft/source/participants for freshness only, never an authorization token.
+        Runtime must recheck current authority and execution context before user commands;
+        preview does not execute, persist, enqueue or authorize deployment.
+      properties:
+        version: { type: integer, enum: [ 1 ] }
+        status: { type: string, enum: [ ready, warning, blocked ] }
+        checked_at: { type: string, format: date-time }
+        input_signature: { type: string, minLength: 64, maxLength: 64, pattern: '^[0-9a-f]{64}$' }
+        source_revision: { type: string, nullable: true, minLength: 40, maxLength: 40, pattern: '^[0-9a-f]{40}$', description: "Exact resolved source commit, or null when unavailable; no mutable-ref compatibility claim." }
+        checks:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/CommandValidationCheck' }
+      oneOf:
+        - properties:
+            status: { enum: [ ready ] }
+            checks:
+              items:
+                properties:
+                  status: { enum: [ pass ] }
+        - properties:
+            status: { enum: [ warning ] }
+            checks:
+              items:
+                properties:
+                  status: { enum: [ pass, warn ] }
+              not:
+                items:
+                  properties:
+                    status: { enum: [ pass ] }
+        - properties:
+            status: { enum: [ blocked ] }
+            checks:
+              not:
+                items:
+                  properties:
+                    status: { enum: [ pass, warn ] }
+
     RecipeRelativePath:
       type: string
       minLength: 1
@@ -1168,6 +1325,21 @@ components:
           items:
             $ref: '#/components/schemas/ServerCapabilityCheck'
 
+        lifecycle_command_warnings:
+          type: array
+          description: |
+            Limited cached binary advisory for configured lifecycle fields. May be empty for
+            unavailable inventory or unsupported commands; npm/npx historically use Node facts.
+            It is not a fresh command-validation report or deployment authorization.
+          items:
+            type: object
+            additionalProperties: false
+            required: [ phase, binary, capability ]
+            properties:
+              phase: { type: string, maxLength: 64 }
+              binary: { type: string, enum: [ git, docker, docker-compose, php, composer, node, npm, npx, rsync ] }
+              capability: { $ref: '#/components/schemas/ServerCapabilityId' }
+
         created_at: { type: string, format: date-time }
 
         updated_at: { type: string, format: date-time }
@@ -1707,6 +1879,12 @@ components:
             URLs, credentials, keys, and lock owners are never exposed in that namespace.
           properties:
             execution_plan: { $ref: '#/components/schemas/DeploymentExecutionPlan' }
+            command_validation:
+              readOnly: true
+              description: Optional reconstructed safe runtime report; older responses may omit it or return null. Raw stored scripts, policy, credentials and output never appear in this namespace. Inherited by authorized DeploymentDetail; independent of the five-code deployment diagnosis.
+              oneOf:
+                - $ref: '#/components/schemas/CommandValidationReport'
+                - { type: object, nullable: true, not: { type: object } }
           additionalProperties: true
 
         project:
@@ -3932,6 +4110,73 @@ paths:
       responses:
 
         "204": { description: Биндинг удалён }
+
+  /projects/{project}/servers/{binding_id}/commands/validate:
+    post:
+      operationId: validateProjectServerCommands
+      x-required-ability: admin
+      x-required-roles: [ admin, devops ]
+      tags: [ Bindings ]
+      summary: Validate existing binding commands without executing or saving the draft
+      description: |
+        Nonpersisting dry-run for the current binding and optional bounded draft overrides.
+        Requires the existing resource-edit workspace role (admin or devops) intersected with
+        admin PAT ability; wildcard PAT never bypasses workspace role. Session authentication
+        uses the same role gate. Authorization, selected workspace and project/binding ownership
+        are checked before SSH or source probes. Missing and inaccessible bindings share a safe
+        404. Throttled to 10 requests per minute. Returns bounded static warnings/errors/unknown
+        states; never executes submitted scripts, updates inventory, saves options or queues a
+        deployment. Signature freshness is not permission; execution rechecks current inputs.
+      security: [ { sanctum: [ ] } ]
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
+        - $ref: '#/components/parameters/ProjectId'
+        - name: binding_id
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1, description: Existing pivot id (NOT a PublicId). }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ValidateProjectServerCommandsRequest' }
+            examples:
+              current: { summary: Check the current configured binding, value: {} }
+              draftReplacement:
+                summary: Replace the entire options object for this preview only
+                value: { php_path: /usr/bin/php, recipe_options: { build_cmd: 'npm run build', composer_allow_phar: false } }
+              releaseReset: { summary: Preview release defaults without saving, value: { recipe_options: null, php_path: null } }
+      responses:
+        "200":
+          description: Completed bounded report, including warning or blocked results.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CommandValidationReport' }
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        "403":
+          description: Resource-edit workspace role or admin PAT ability denied before probes.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+        "404":
+          description: Missing or inaccessible project, workspace or binding; same safe non-disclosing envelope.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceError' }
+        "422":
+          description: Invalid draft shape, bounds, effective recipe or binding context.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ValidationError' }
+        "429":
+          description: Preview limit of 10 requests per minute exceeded.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /projects/{project}/servers/{binding_id}/env:
 
