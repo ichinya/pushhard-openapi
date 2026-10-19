@@ -432,6 +432,675 @@ components:
           maxLength: 255
           description: Omission uses the current binding PHP selector; null clears the override using existing binding reset semantics.
 
+    ComposeRetentionRejection:
+      type: object
+      additionalProperties: false
+      required:
+        - message
+        - reason
+      description: >-
+        Закрытый безопасный отказ без raw provider output. Readiness refusal до dispatch не создаёт
+        operation/permit/adoption/delete.
+      properties:
+        message:
+          type: string
+          enum:
+            - Операция Compose retention недоступна.
+        reason:
+          type: string
+          enum:
+            - retention_not_ready
+            - inventory_limit_exceeded
+            - capability_unavailable
+            - preview_stale
+            - ownership_unknown
+            - executor_unverified
+            - no_target
+            - executor_busy
+            - authority_denied
+            - permit_invalid
+            - scope_changed
+
+    ComposeRetentionReason:
+      type: string
+      enum:
+        - within_limit
+        - active_runtime
+        - current_reference
+        - inflight
+        - executor_unverified
+        - recovery_pin
+        - ownership_unknown
+        - foreign_scope
+        - path_unsafe
+        - persistent_reference
+        - daemon_unverified
+        - inventory_incomplete
+        - capability_unavailable
+        - preview_stale
+        - delete_failed
+        - quarantine_pending
+        - inventory_limit_exceeded
+        - retention_not_ready
+        - no_target
+        - executor_busy
+        - authority_denied
+        - permit_invalid
+        - scope_changed
+      description: Закрытые безопасные причины retention; raw ошибки, paths, env и Docker inspect не отражаются.
+    ComposeRetentionEmptyRequest:
+      type: object
+      additionalProperties: false
+      maxProperties: 0
+      description: Только пустой объект для explicit prepare/pin. Запрещены budgets, paths, commands и authority overrides.
+    ComposeRetentionApplyRequest:
+      type: object
+      additionalProperties: false
+      description: >-
+        Только opaque actor/auth-mode/token/scope-bound preview и idempotency intent. Тот же ключ и input
+        возвращают ту же operation; другой input с тем же ключом даёт 409. Preview не заменяет fresh admission.
+      required:
+        - preview_token
+        - idempotency_key
+      properties:
+        preview_token:
+          type: string
+          minLength: 32
+          maxLength: 256
+          pattern: ^[A-Za-z0-9_-]+$
+        idempotency_key:
+          type: string
+          minLength: 32
+          maxLength: 256
+          pattern: ^[A-Za-z0-9_-]+$
+    ComposeRetentionMeasure:
+      type: object
+      additionalProperties: false
+      description: >-
+        Неизвестное значение — null, не ноль. Allocated bytes не гарантируют равный df delta; quarantine не
+        считается удалённым.
+      required:
+        - count
+        - logical_bytes
+        - allocated_bytes
+      properties:
+        count:
+          type: integer
+          minimum: 0
+          nullable: true
+        logical_bytes:
+          type: integer
+          minimum: 0
+          nullable: true
+        allocated_bytes:
+          type: integer
+          minimum: 0
+          nullable: true
+    ComposeRetentionAggregates:
+      type: object
+      additionalProperties: false
+      description: >-
+        Один primary decision на каталог, несколько reasons не дублируют counts. Retained/protected —
+        непересекающиеся primary categories; successful protection внутри latest N считается один раз. Deleted
+        содержит только подтверждённые физические удаления; pending quarantine отдельно.
+      required:
+        - eligible
+        - retained
+        - protected
+        - skipped
+        - deleted
+        - failed
+        - pending
+      properties:
+        eligible:
+          $ref: '#/components/schemas/ComposeRetentionMeasure'
+        retained:
+          $ref: '#/components/schemas/ComposeRetentionMeasure'
+        protected:
+          $ref: '#/components/schemas/ComposeRetentionMeasure'
+        skipped:
+          $ref: '#/components/schemas/ComposeRetentionMeasure'
+        deleted:
+          $ref: '#/components/schemas/ComposeRetentionMeasure'
+        failed:
+          $ref: '#/components/schemas/ComposeRetentionMeasure'
+        pending:
+          $ref: '#/components/schemas/ComposeRetentionMeasure'
+    ComposeRetentionRevisions:
+      type: object
+      additionalProperties: false
+      description: >-
+        Opaque revisions одного frozen snapshot. Budget change требует нового preview, как изменение policy, pins
+        или scope.
+      required:
+        - policy
+        - config
+        - pin
+        - scope
+        - budget
+      properties:
+        policy:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: ^[A-Za-z0-9._:-]+$
+        config:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: ^[A-Za-z0-9._:-]+$
+        pin:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: ^[A-Za-z0-9._:-]+$
+        scope:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: ^[A-Za-z0-9._:-]+$
+        budget:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: ^[A-Za-z0-9._:-]+$
+    ComposeRetentionCandidate:
+      type: object
+      additionalProperties: false
+      description: >-
+        Безопасная строка одного проверяемого attempt. Только numeric basename, без raw path/container/foreign
+        identities. Unknown lineage/idle сохраняется; DB terminal, возраст и отсутствие runner не доказывают
+        безопасность.
+      required:
+        - deployment_id
+        - basename
+        - status
+        - age_seconds
+        - decision
+        - reasons
+        - logical_bytes
+        - allocated_bytes
+      properties:
+        deployment_id:
+          type: string
+          pattern: ^[0-9A-HJKMNP-TV-Z]{26}$
+          nullable: true
+        basename:
+          type: string
+          minLength: 1
+          maxLength: 20
+          pattern: ^[1-9][0-9]{0,19}$
+        status:
+          type: string
+          nullable: true
+          enum:
+            - queued
+            - running
+            - success
+            - failed
+            - cancelled
+            - null
+        age_seconds:
+          type: integer
+          minimum: 0
+          nullable: true
+        decision:
+          type: string
+          enum:
+            - eligible
+            - retained
+            - protected
+            - skipped
+            - deleted
+            - failed
+            - pending
+        reasons:
+          type: array
+          minItems: 1
+          maxItems: 23
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/ComposeRetentionReason'
+        logical_bytes:
+          type: integer
+          minimum: 0
+          nullable: true
+        allocated_bytes:
+          type: integer
+          minimum: 0
+          nullable: true
+    ComposeRetentionPreview:
+      type: object
+      additionalProperties: false
+      description: >-
+        Frozen version-1 dry-run: последние N успешных checkout плюс protected extras; terminal failed/cancelled
+        отдельно и не расходуют N. GET не устанавливает helper, не adopt/delete и не меняет binding/deployment.
+        Snapshot/cursor живёт 10 минут, связан с actor/auth mode/PAT/workspace/binding generation. Все страницы
+        имеют одинаковые preview_token/checked_at/revisions/aggregates; silent refresh запрещён. Apply проверяет
+        факты заново. Can_apply=false не выдаёт token. Per-tree unknown bytes остаются null без фиктивной
+        экономии.
+      required:
+        - version
+        - status
+        - checked_at
+        - keep_releases
+        - complete
+        - can_apply
+        - reason
+        - preview_token
+        - revisions
+        - recovery_status
+        - rollback_supported
+        - aggregates
+        - protected_overflow
+        - candidates
+        - next_cursor
+      properties:
+        version:
+          type: integer
+          enum:
+            - 1
+        status:
+          type: string
+          enum:
+            - available
+            - unavailable
+        checked_at:
+          type: string
+          format: date-time
+        keep_releases:
+          type: integer
+          minimum: 1
+          maximum: 50
+        complete:
+          type: boolean
+        can_apply:
+          type: boolean
+        reason:
+          type: string
+          nullable: true
+          enum:
+            - within_limit
+            - active_runtime
+            - current_reference
+            - inflight
+            - executor_unverified
+            - recovery_pin
+            - ownership_unknown
+            - foreign_scope
+            - path_unsafe
+            - persistent_reference
+            - daemon_unverified
+            - inventory_incomplete
+            - capability_unavailable
+            - preview_stale
+            - delete_failed
+            - quarantine_pending
+            - inventory_limit_exceeded
+            - retention_not_ready
+            - no_target
+            - executor_busy
+            - authority_denied
+            - permit_invalid
+            - scope_changed
+            - null
+        preview_token:
+          type: string
+          minLength: 32
+          maxLength: 256
+          pattern: ^[A-Za-z0-9_-]+$
+          nullable: true
+        revisions:
+          $ref: '#/components/schemas/ComposeRetentionRevisions'
+        recovery_status:
+          type: string
+          enum:
+            - not_supported
+        rollback_supported:
+          type: boolean
+          enum:
+            - false
+        aggregates:
+          $ref: '#/components/schemas/ComposeRetentionAggregates'
+        protected_overflow:
+          type: integer
+          minimum: 0
+        candidates:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/ComposeRetentionCandidate'
+        next_cursor:
+          type: string
+          minLength: 32
+          maxLength: 256
+          pattern: ^[A-Za-z0-9_-]+$
+          nullable: true
+      allOf:
+        - oneOf:
+            - properties:
+                can_apply:
+                  enum:
+                    - true
+                complete:
+                  enum:
+                    - true
+                status:
+                  enum:
+                    - available
+                preview_token:
+                  type: string
+                  minLength: 32
+                  maxLength: 256
+                  pattern: ^[A-Za-z0-9_-]+$
+                  nullable: false
+                reason:
+                  type: string
+                  nullable: true
+                  enum:
+                    - null
+            - properties:
+                can_apply:
+                  enum:
+                    - false
+                preview_token:
+                  type: string
+                  nullable: true
+                  enum:
+                    - null
+                reason:
+                  type: string
+                  enum:
+                    - within_limit
+                    - active_runtime
+                    - current_reference
+                    - inflight
+                    - executor_unverified
+                    - recovery_pin
+                    - ownership_unknown
+                    - foreign_scope
+                    - path_unsafe
+                    - persistent_reference
+                    - daemon_unverified
+                    - inventory_incomplete
+                    - capability_unavailable
+                    - preview_stale
+                    - delete_failed
+                    - quarantine_pending
+                    - inventory_limit_exceeded
+                    - retention_not_ready
+                    - no_target
+                    - executor_busy
+                    - authority_denied
+                    - permit_invalid
+                    - scope_changed
+        - oneOf:
+            - properties:
+                complete:
+                  enum:
+                    - true
+            - properties:
+                complete:
+                  enum:
+                    - false
+                status:
+                  enum:
+                    - unavailable
+                can_apply:
+                  enum:
+                    - false
+                next_cursor:
+                  type: string
+                  nullable: true
+                  enum:
+                    - null
+    ComposeRetentionResult:
+      type: object
+      additionalProperties: false
+      description: >-
+        Фактические retained/deleted/protected counts и logical/allocated bytes, причины и partial/pending
+        результаты. Crash/rename не превращаются в подтверждённый delete. Maintenance outcome не меняет verdict
+        deployment.
+      required:
+        - version
+        - checked_at
+        - complete
+        - aggregates
+        - protected_overflow
+        - recovery_status
+        - rollback_supported
+        - outcomes
+      properties:
+        version:
+          type: integer
+          enum:
+            - 1
+        checked_at:
+          type: string
+          format: date-time
+        complete:
+          type: boolean
+        aggregates:
+          $ref: '#/components/schemas/ComposeRetentionAggregates'
+        protected_overflow:
+          type: integer
+          minimum: 0
+        recovery_status:
+          type: string
+          enum:
+            - not_supported
+        rollback_supported:
+          type: boolean
+          enum:
+            - false
+        outcomes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ComposeRetentionCandidate'
+          description: >-
+            Безопасные per-candidate outcomes; полный объём ограничен validated server-side inventory
+            byte/count/deadline budgets. Не выдавать truncated результат как complete.
+    ComposeRetentionOperation:
+      type: object
+      additionalProperties: false
+      description: >-
+        Persisted scoped asynchronous intent/result. Foreign operation — safe 404. Queued/running может иметь
+        result=null; итог содержит safe counts/bytes и причины, без actor credentials. Authority заново
+        проверяется в queue и перед каждым one-shot candidate permit.
+      required:
+        - id
+        - kind
+        - state
+        - created_at
+        - finished_at
+        - reason
+        - result
+      properties:
+        id:
+          type: string
+          pattern: ^[0-9A-HJKMNP-TV-Z]{26}$
+        kind:
+          type: string
+          enum:
+            - prepare
+            - apply
+            - lifecycle
+            - reconcile
+        state:
+          type: string
+          enum:
+            - queued
+            - running
+            - completed
+            - partial
+            - blocked
+            - failed
+        created_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+          nullable: true
+        reason:
+          type: string
+          nullable: true
+          enum:
+            - within_limit
+            - active_runtime
+            - current_reference
+            - inflight
+            - executor_unverified
+            - recovery_pin
+            - ownership_unknown
+            - foreign_scope
+            - path_unsafe
+            - persistent_reference
+            - daemon_unverified
+            - inventory_incomplete
+            - capability_unavailable
+            - preview_stale
+            - delete_failed
+            - quarantine_pending
+            - inventory_limit_exceeded
+            - retention_not_ready
+            - no_target
+            - executor_busy
+            - authority_denied
+            - permit_invalid
+            - scope_changed
+            - null
+        result:
+          oneOf:
+            - $ref: '#/components/schemas/ComposeRetentionResult'
+            - type: object
+              nullable: true
+              not:
+                type: object
+    ComposeRetentionPin:
+      type: object
+      additionalProperties: false
+      description: >-
+        Явная audited защита exact owned target; survives restart/keep decrease/detach. PUT идемпотентен. Нет
+        unpin/activation/rollback endpoint: pin не создаёт usable copy и не восстанавливает удалённые env/archive.
+      required:
+        - id
+        - deployment_id
+        - basename
+        - active
+        - reason
+        - revision
+        - created_at
+      properties:
+        id:
+          type: string
+          pattern: ^[0-9A-HJKMNP-TV-Z]{26}$
+        deployment_id:
+          type: string
+          pattern: ^[0-9A-HJKMNP-TV-Z]{26}$
+        basename:
+          type: string
+          minLength: 1
+          maxLength: 20
+          pattern: ^[1-9][0-9]{0,19}$
+        active:
+          type: boolean
+          enum:
+            - true
+        reason:
+          type: string
+          enum:
+            - recovery_pin
+        revision:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: ^[A-Za-z0-9._:-]+$
+        created_at:
+          type: string
+          format: date-time
+    ComposeRetentionDeploymentProjection:
+      type: object
+      additionalProperties: false
+      description: >-
+        Optional nullable reconstructed output-only deployment metadata. Старые responses могут omit/null. Classic
+        retention_removed_releases, execution identity и rollback semantics не меняются.
+      required:
+        - version
+        - operation_id
+        - state
+        - checked_at
+        - complete
+        - reason
+        - aggregates
+        - protected_overflow
+        - recovery_status
+        - rollback_supported
+      properties:
+        version:
+          type: integer
+          enum:
+            - 1
+        operation_id:
+          type: string
+          pattern: ^[0-9A-HJKMNP-TV-Z]{26}$
+        state:
+          type: string
+          enum:
+            - queued
+            - running
+            - completed
+            - partial
+            - blocked
+            - failed
+        checked_at:
+          type: string
+          format: date-time
+          nullable: true
+        complete:
+          type: boolean
+        reason:
+          type: string
+          nullable: true
+          enum:
+            - within_limit
+            - active_runtime
+            - current_reference
+            - inflight
+            - executor_unverified
+            - recovery_pin
+            - ownership_unknown
+            - foreign_scope
+            - path_unsafe
+            - persistent_reference
+            - daemon_unverified
+            - inventory_incomplete
+            - capability_unavailable
+            - preview_stale
+            - delete_failed
+            - quarantine_pending
+            - inventory_limit_exceeded
+            - retention_not_ready
+            - no_target
+            - executor_busy
+            - authority_denied
+            - permit_invalid
+            - scope_changed
+            - null
+        aggregates:
+          $ref: '#/components/schemas/ComposeRetentionAggregates'
+        protected_overflow:
+          type: integer
+          minimum: 0
+        recovery_status:
+          type: string
+          enum:
+            - not_supported
+        rollback_supported:
+          type: boolean
+          enum:
+            - false
+
     CommandValidationField:
       type: string
       nullable: true
@@ -1879,6 +2548,12 @@ components:
             URLs, credentials, keys, and lock owners are never exposed in that namespace.
           properties:
             execution_plan: { $ref: '#/components/schemas/DeploymentExecutionPlan' }
+            compose_retention:
+              readOnly: true
+              description: Безопасная optional/null Compose retention projection; не raw stored metadata и не rollback guarantee.
+              oneOf:
+                - $ref: '#/components/schemas/ComposeRetentionDeploymentProjection'
+                - { type: object, nullable: true, not: { type: object } }
             command_validation:
               readOnly: true
               description: Optional reconstructed safe runtime report; older responses may omit it or return null. Raw stored scripts, policy, credentials and output never appear in this namespace. Inherited by authorized DeploymentDetail; independent of the five-code deployment diagnosis.
@@ -4110,6 +4785,454 @@ paths:
       responses:
 
         "204": { description: Биндинг удалён }
+
+  /projects/{project}/servers/{binding_id}/compose-retention:
+    get:
+      operationId: getProjectServerComposeRetention
+      x-required-ability: read
+      x-required-roles:
+        - admin
+        - devops
+        - viewer
+      tags:
+        - Bindings
+      summary: Получить полный dry-run Compose retention
+      description: >-
+        Только docker_compose binding. Session role и PAT ability пересекаются; admin ability не подразумевает
+        read/deploy. Workspace selector и ownership проверяются до SSH. Foreign binding/operation/cursor/pin
+        даёт одинаковый safe 404. Не затрагиваются volumes/shared/foreign data; global Docker prune запрещён.
+
+        GET не bootstrap/adopt/delete. Первый запрос создаёт frozen snapshot; subsequent cursor страницы читают
+        тот же snapshot. Invalid cursor=422, expired snapshot=409, foreign principal/scope=404; apply всегда
+        revalidates. 30 requests/min. Default budgets 1000 attempts/1000 containers/1MiB; operator deployment
+        config может контролируемо увеличить конечные budgets. Exceed: inventory_limit_exceeded, incomplete/null
+        unknown/no apply; новый complete preview после изменения budgets.
+      security:
+        - sanctum: []
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
+        - $ref: '#/components/parameters/ProjectId'
+        - name: binding_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+            minLength: 32
+            maxLength: 256
+            pattern: ^[A-Za-z0-9_-]+$
+      responses:
+        '200':
+          description: Безопасный scoped результат.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComposeRetentionPreview'
+        '401':
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Известный membership role или exact PAT ability недостаточны.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceError'
+        '404':
+          description: Missing/foreign project, workspace, binding, operation, pin или cursor; один safe envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceError'
+        '409':
+          description: >-
+            Workspace selector/archive conflict, stale preview/revisions, expired snapshot или idempotency key с
+            другим input. Нужен новый preview; отказ не разрешает delete.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: '#/components/schemas/WorkspaceError'
+                  - $ref: '#/components/schemas/ComposeRetentionRejection'
+        '422':
+          description: >-
+            Неверный payload/cursor/ULID, wrong recipe, unknown pin target или retention_not_ready. Никакого
+            destructive dispatch до readiness; safe closed reason, без raw provider output.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: '#/components/schemas/ValidationError'
+                  - $ref: '#/components/schemas/ComposeRetentionRejection'
+        '429':
+          description: Bounded request throttle exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /projects/{project}/servers/{binding_id}/compose-retention/prepare:
+    post:
+      operationId: prepareProjectServerComposeRetention
+      x-required-ability: admin
+      x-required-roles:
+        - admin
+        - devops
+      tags:
+        - Bindings
+      summary: Подготовить compatible retention helper
+      description: >-
+        Только docker_compose binding. Session role и PAT ability пересекаются; admin ability не подразумевает
+        read/deploy. Workspace selector и ownership проверяются до SSH. Foreign binding/operation/cursor/pin
+        даёт одинаковый safe 404. Не затрагиваются volumes/shared/foreign data; global Docker prune запрещён.
+
+        Explicit audited mutation, не GET: compatible runner image/digest/protocol/target architecture и
+        existing SSH trust. Нет фиктивного Deployment, API-local executable или arbitrary download. Read-only
+        preview может быть доступен при закрытом destructive gate. 10 requests/min.
+      security:
+        - sanctum: []
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
+        - $ref: '#/components/parameters/ProjectId'
+        - name: binding_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        '202':
+          description: Persisted asynchronous intent; результат получается через scoped operation poll.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComposeRetentionOperation'
+        '401':
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Известный membership role или exact PAT ability недостаточны.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceError'
+        '404':
+          description: Missing/foreign project, workspace, binding, operation, pin или cursor; один safe envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceError'
+        '409':
+          description: >-
+            Workspace selector/archive conflict, stale preview/revisions, expired snapshot или idempotency key с
+            другим input. Нужен новый preview; отказ не разрешает delete.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: '#/components/schemas/WorkspaceError'
+                  - $ref: '#/components/schemas/ComposeRetentionRejection'
+        '422':
+          description: >-
+            Неверный payload/cursor/ULID, wrong recipe, unknown pin target или retention_not_ready. Никакого
+            destructive dispatch до readiness; safe closed reason, без raw provider output.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: '#/components/schemas/ValidationError'
+                  - $ref: '#/components/schemas/ComposeRetentionRejection'
+        '429':
+          description: Bounded request throttle exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ComposeRetentionEmptyRequest'
+  /projects/{project}/servers/{binding_id}/compose-retention/apply:
+    post:
+      operationId: applyProjectServerComposeRetention
+      x-required-ability: deploy
+      x-required-roles:
+        - admin
+        - devops
+      tags:
+        - Bindings
+      summary: Применить рассмотренную retention policy
+      description: >-
+        Только docker_compose binding. Session role и PAT ability пересекаются; admin ability не подразумевает
+        read/deploy. Workspace selector и ownership проверяются до SSH. Foreign binding/operation/cursor/pin
+        даёт одинаковый safe 404. Не затрагиваются volumes/shared/foreign data; global Docker prune запрещён.
+
+        Explicit reviewed preview_token + idempotency_key; только сохранённый binding keep1..50, no client
+        candidate/path/status/budget overrides. Перед dispatch проверяется общий destructive readiness gate
+        (writer coordination/custody, durable pin storage/read/invalidation и compatible helper);
+        retention_not_ready не создаёт destructive operation/permit/adoption/delete. Fresh
+        auth/runtime/root/pins/budget revalidation под scope lease, stale=409. Queued job не наследует
+        отозванную authority; revoke после committed permit блокирует следующие candidates. Legacy требует
+        proven historical lineage/idle; unknown сохраняется и не закрывает R4. 10 requests/min.
+      security:
+        - sanctum: []
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
+        - $ref: '#/components/parameters/ProjectId'
+        - name: binding_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        '202':
+          description: Persisted asynchronous intent; результат получается через scoped operation poll.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComposeRetentionOperation'
+        '401':
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Известный membership role или exact PAT ability недостаточны.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceError'
+        '404':
+          description: Missing/foreign project, workspace, binding, operation, pin или cursor; один safe envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceError'
+        '409':
+          description: >-
+            Workspace selector/archive conflict, stale preview/revisions, expired snapshot или idempotency key с
+            другим input. Нужен новый preview; отказ не разрешает delete.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: '#/components/schemas/WorkspaceError'
+                  - $ref: '#/components/schemas/ComposeRetentionRejection'
+        '422':
+          description: >-
+            Неверный payload/cursor/ULID, wrong recipe, unknown pin target или retention_not_ready. Никакого
+            destructive dispatch до readiness; safe closed reason, без raw provider output.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: '#/components/schemas/ValidationError'
+                  - $ref: '#/components/schemas/ComposeRetentionRejection'
+        '429':
+          description: Bounded request throttle exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ComposeRetentionApplyRequest'
+  /projects/{project}/servers/{binding_id}/compose-retention/pins/{deployment}:
+    put:
+      operationId: pinProjectServerComposeRetention
+      x-required-ability: admin
+      x-required-roles:
+        - admin
+        - devops
+      tags:
+        - Bindings
+      summary: Защитить exact owned checkout от retention
+      description: >-
+        Только docker_compose binding. Session role и PAT ability пересекаются; admin ability не подразумевает
+        read/deploy. Workspace selector и ownership проверяются до SSH. Foreign binding/operation/cursor/pin
+        даёт одинаковый safe 404. Не затрагиваются volumes/shared/foreign data; global Docker prune запрещён.
+
+        Idempotent audited pin exact known target под тем же lease, что apply; revision инвалидирует previews.
+        Unknown/incompatible target=422, foreign=404. Нет client path/release/unpin и нет гарантии usable
+        rollback copy. Pin сохраняется при restart/limit decrease и не исчезает через scope cascade. 10
+        requests/min.
+      security:
+        - sanctum: []
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
+        - $ref: '#/components/parameters/ProjectId'
+        - name: binding_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: deployment
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: ^[0-9A-HJKMNP-TV-Z]{26}$
+      responses:
+        '200':
+          description: Безопасный scoped результат.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComposeRetentionPin'
+        '401':
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Известный membership role или exact PAT ability недостаточны.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceError'
+        '404':
+          description: Missing/foreign project, workspace, binding, operation, pin или cursor; один safe envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceError'
+        '409':
+          description: >-
+            Workspace selector/archive conflict, stale preview/revisions, expired snapshot или idempotency key с
+            другим input. Нужен новый preview; отказ не разрешает delete.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: '#/components/schemas/WorkspaceError'
+                  - $ref: '#/components/schemas/ComposeRetentionRejection'
+        '422':
+          description: >-
+            Неверный payload/cursor/ULID, wrong recipe, unknown pin target или retention_not_ready. Никакого
+            destructive dispatch до readiness; safe closed reason, без raw provider output.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: '#/components/schemas/ValidationError'
+                  - $ref: '#/components/schemas/ComposeRetentionRejection'
+        '429':
+          description: Bounded request throttle exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ComposeRetentionEmptyRequest'
+  /projects/{project}/servers/{binding_id}/compose-retention/operations/{operation}:
+    get:
+      operationId: getProjectServerComposeRetentionOperation
+      x-required-ability: read
+      x-required-roles:
+        - admin
+        - devops
+        - viewer
+      tags:
+        - Bindings
+      summary: Получить scoped persisted operation/result
+      description: >-
+        Только docker_compose binding. Session role и PAT ability пересекаются; admin ability не подразумевает
+        read/deploy. Workspace selector и ownership проверяются до SSH. Foreign binding/operation/cursor/pin
+        даёт одинаковый safe 404. Не затрагиваются volumes/shared/foreign data; global Docker prune запрещён.
+
+        Поллинг только в исходном project/binding scope; foreign operation=404. Safe reason/result,
+        logical/allocated bytes и protected overflow. Unknown/partial/quarantine отдельно от deleted;
+        maintenance failure не меняет primary deployment verdict.
+      security:
+        - sanctum: []
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
+        - $ref: '#/components/parameters/ProjectId'
+        - name: binding_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: operation
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: ^[0-9A-HJKMNP-TV-Z]{26}$
+      responses:
+        '200':
+          description: Безопасный scoped результат.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComposeRetentionOperation'
+        '401':
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Известный membership role или exact PAT ability недостаточны.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceError'
+        '404':
+          description: Missing/foreign project, workspace, binding, operation, pin или cursor; один safe envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceError'
+        '409':
+          description: >-
+            Workspace selector/archive conflict, stale preview/revisions, expired snapshot или idempotency key с
+            другим input. Нужен новый preview; отказ не разрешает delete.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: '#/components/schemas/WorkspaceError'
+                  - $ref: '#/components/schemas/ComposeRetentionRejection'
+        '422':
+          description: >-
+            Неверный payload/cursor/ULID, wrong recipe, unknown pin target или retention_not_ready. Никакого
+            destructive dispatch до readiness; safe closed reason, без raw provider output.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: '#/components/schemas/ValidationError'
+                  - $ref: '#/components/schemas/ComposeRetentionRejection'
+        '429':
+          description: Bounded request throttle exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   /projects/{project}/servers/{binding_id}/commands/validate:
     post:
