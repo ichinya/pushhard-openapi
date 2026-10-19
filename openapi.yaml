@@ -465,6 +465,7 @@ components:
       type: string
       enum:
         - within_limit
+        - retention_eligible
         - active_runtime
         - current_reference
         - inflight
