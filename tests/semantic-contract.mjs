@@ -438,7 +438,7 @@ const resourceOps = [
   'createProjectProviderWebhook', 'updateProjectProviderWebhook', 'deleteProjectProviderWebhook',
   'listProjectServers', 'createProjectServerBinding', 'updateProjectServerBinding', 'deleteProjectServerBinding',
   'validateProjectServerCommands',
-  'getProjectServerComposeRetention', 'prepareProjectServerComposeRetention', 'applyProjectServerComposeRetention', 'pinProjectServerComposeRetention', 'getProjectServerComposeRetentionOperation',
+  'getProjectServerComposeRetention', 'prepareProjectServerComposeRetention', 'adoptProjectServerComposeRetentionLegacy', 'applyProjectServerComposeRetention', 'pinProjectServerComposeRetention', 'getProjectServerComposeRetentionOperation',
   'mutateProjectServerEnv', 'updateProjectServerEnv', 'listAvailableServers',
   'triggerProjectDeploy', 'previewProjectDeploymentVariables', 'listProjectDeployments',
   'getProjectDeployment', 'cancelProjectDeployment',
@@ -741,6 +741,7 @@ const legacyRoleMatrix = {
   validateProjectServerCommands: ['admin', 'devops'],
   getProjectServerComposeRetention: ['admin', 'devops', 'viewer'],
   prepareProjectServerComposeRetention: ['admin', 'devops'],
+  adoptProjectServerComposeRetentionLegacy: ['admin', 'devops'],
   applyProjectServerComposeRetention: ['admin', 'devops'],
   pinProjectServerComposeRetention: ['admin', 'devops'],
   getProjectServerComposeRetentionOperation: ['admin', 'devops', 'viewer'],
@@ -1207,6 +1208,7 @@ const retentionBase = '/projects/{project}/servers/{binding_id}/compose-retentio
 for (const [suffix, method, id, ability, output] of [
   ['', 'get', 'getProjectServerComposeRetention', 'read', 'ComposeRetentionPreview'],
   ['/prepare', 'post', 'prepareProjectServerComposeRetention', 'admin', 'ComposeRetentionOperation'],
+  ['/adopt-legacy', 'post', 'adoptProjectServerComposeRetentionLegacy', 'admin', 'ComposeRetentionOperation'],
   ['/apply', 'post', 'applyProjectServerComposeRetention', 'deploy', 'ComposeRetentionOperation'],
   ['/pins/{deployment}', 'put', 'pinProjectServerComposeRetention', 'admin', 'ComposeRetentionPin'],
   ['/operations/{operation}', 'get', 'getProjectServerComposeRetentionOperation', 'read', 'ComposeRetentionOperation'],
@@ -1225,12 +1227,17 @@ for (const [suffix, method, id, ability, output] of [
     if (param) invariant(param.schema.type === 'string' && param.schema.pattern === '^[0-9A-HJKMNP-TV-Z]{26}$', id + ' public id format')
   }
 }
-for (const name of ['ComposeRetentionRejection', 'ComposeRetentionEmptyRequest', 'ComposeRetentionApplyRequest', 'ComposeRetentionMeasure', 'ComposeRetentionAggregates', 'ComposeRetentionRevisions', 'ComposeRetentionCandidate', 'ComposeRetentionPreview', 'ComposeRetentionResult', 'ComposeRetentionOperation', 'ComposeRetentionPin', 'ComposeRetentionDeploymentProjection']) {
+for (const name of ['ComposeRetentionRejection', 'ComposeRetentionEmptyRequest', 'ComposeRetentionApplyRequest', 'ComposeRetentionLegacyAdoptionRequest', 'ComposeRetentionMeasure', 'ComposeRetentionAggregates', 'ComposeRetentionRevisions', 'ComposeRetentionCandidate', 'ComposeRetentionPreview', 'ComposeRetentionResult', 'ComposeRetentionOperation', 'ComposeRetentionPin', 'ComposeRetentionDeploymentProjection']) {
   assertClosedObject(schema(spec, name), name)
 }
 equal(propertyNames(schema(spec, 'ComposeRetentionApplyRequest')), ['idempotency_key', 'preview_token'], 'apply accepts only opaque reviewed intent')
 equal(schema(spec, 'ComposeRetentionApplyRequest').required, ['preview_token', 'idempotency_key'], 'apply needs token and dedupe key')
 equal(propertyNames(schema(spec, 'ComposeRetentionEmptyRequest')), [], 'prepare/pin reject all client fields')
+equal(propertyNames(schema(spec, 'ComposeRetentionLegacyAdoptionRequest')), ['confirm_ownership', 'idempotency_key', 'preview_token'], 'legacy adoption accepts only confirmed opaque reviewed intent')
+equal(schema(spec, 'ComposeRetentionLegacyAdoptionRequest').required, ['preview_token', 'idempotency_key', 'confirm_ownership'], 'legacy adoption needs separate explicit confirmation')
+equal(schema(spec, 'ComposeRetentionLegacyAdoptionRequest').properties.confirm_ownership.enum, [true], 'legacy ownership confirmation cannot be inferred')
+equal(spec.paths[retentionBase + '/adopt-legacy'].post.requestBody.content['application/json'].schema, { $ref: '#/components/schemas/ComposeRetentionLegacyAdoptionRequest' }, 'adoption request stays closed')
+equal(schema(spec, 'ComposeRetentionAdoptionResult').allOf[0], { $ref: '#/components/schemas/ComposeRetentionResult' }, 'adoption keeps the safe result projection')
 equal(schema(spec, 'ComposeRetentionReason').enum, ['within_limit', 'retention_eligible', 'active_runtime', 'current_reference', 'inflight', 'executor_unverified', 'recovery_pin', 'ownership_unknown', 'foreign_scope', 'path_unsafe', 'persistent_reference', 'daemon_unverified', 'inventory_incomplete', 'capability_unavailable', 'preview_stale', 'delete_failed', 'quarantine_pending', 'inventory_limit_exceeded', 'retention_not_ready', 'no_target', 'executor_busy', 'authority_denied', 'permit_invalid', 'scope_changed'], 'closed retention reasons')
 invariant(schema(spec, 'ComposeRetentionMeasure').properties.allocated_bytes.nullable === true, 'unknown allocated bytes remain null')
 equal(schema(spec, 'ComposeRetentionPreview').properties.rollback_supported.enum, [false], 'retention is not Compose rollback')
@@ -1260,6 +1267,11 @@ for (const value of [null, [], { path: '/srv/foreign' }, { budget: 10001 }, { ma
 rf('ComposeRetentionApplyRequest', 'opaque apply intent', { preview_token: token, idempotency_key: token }, true)
 for (const value of [{}, { preview_token: token }, { idempotency_key: token }, { preview_token: '../escape', idempotency_key: token }, { preview_token: token, idempotency_key: '' }]) rf('ComposeRetentionApplyRequest', 'missing or malformed intent', value, false)
 for (const field of ['path', 'keep_releases', 'candidates', 'status', 'budget', 'max_attempts', 'actor_user_id', 'request_kind', 'command']) rf('ComposeRetentionApplyRequest', 'reject client authority ' + field, { preview_token: token, idempotency_key: token, [field]: 'arbitrary' }, false)
+const adoptionIntent = { preview_token: token, idempotency_key: token, confirm_ownership: true }
+rf('ComposeRetentionLegacyAdoptionRequest', 'explicit ownership confirmation', adoptionIntent, true)
+for (const confirm_ownership of [false, null, 0, 1, 'true']) rf('ComposeRetentionLegacyAdoptionRequest', 'reject implicit or untyped confirmation', { ...adoptionIntent, confirm_ownership }, false)
+for (const value of [{}, { preview_token: token, idempotency_key: token }, { ...adoptionIntent, preview_token: '../escape' }]) rf('ComposeRetentionLegacyAdoptionRequest', 'reject missing or invalid reviewed intent', value, false)
+for (const field of ['path', 'candidates', 'actor_user_id', 'owner', 'writer_verified', 'claim', 'force', 'budget']) rf('ComposeRetentionLegacyAdoptionRequest', 'reject client adoption authority ' + field, { ...adoptionIntent, [field]: 'arbitrary' }, false)
 rf('ComposeRetentionPreview', 'complete applyable snapshot', preview, true)
 for (const keep_releases of [1, 5, 50]) rf('ComposeRetentionPreview', 'supported keep limit', { ...preview, keep_releases }, true)
 for (const keep_releases of [0, 51, '5']) rf('ComposeRetentionPreview', 'reject invalid keep', { ...preview, keep_releases }, false)
@@ -1268,6 +1280,11 @@ rf('ComposeRetentionPreview', 'ready inventory but pins not ready', { ...preview
 for (const value of [{ ...incomplete, can_apply: true }, { ...incomplete, preview_token: token }, { ...preview, rollback_supported: true }, { ...preview, preview_token: null }, { ...preview, can_apply: false }, { ...preview, reason: 'raw error' }, { ...preview, checked_at: 'yesterday' }, { ...preview, revisions: { ...revisions, budget: '' } }]) rf('ComposeRetentionPreview', 'reject unsafe or malformed preview', value, false)
 for (const field of ['version', 'checked_at', 'complete', 'can_apply', 'preview_token', 'revisions', 'aggregates', 'candidates', 'next_cursor']) { const value = { ...preview }; delete value[field]; rf('ComposeRetentionPreview', 'reject missing preview ' + field, value, false) }
 rf('ComposeRetentionCandidate', 'safe protected candidate', candidate, true)
+rf('ComposeRetentionCandidate', 'legacy review flag is not ownership', { ...candidate, decision: 'skipped', reasons: ['ownership_unknown'], legacy_adoption_available: true }, true)
+for (const value of [1, null, 'true']) rf('ComposeRetentionCandidate', 'reject untyped legacy review flag', { ...candidate, legacy_adoption_available: value }, false)
+rf('ComposeRetentionPreview', 'frozen legacy review count', { ...preview, legacy_adoption_count: 53 }, true)
+rf('ComposeRetentionPreview', 'unknown legacy review count', { ...incomplete, legacy_adoption_count: null }, true)
+for (const value of [-1, true, '53']) rf('ComposeRetentionPreview', 'reject invalid legacy review count', { ...preview, legacy_adoption_count: value }, false)
 rf('ComposeRetentionCandidate', 'eligible terminal candidate has an explicit eligibility reason', { ...candidate, status: 'failed', decision: 'eligible', reasons: ['retention_eligible'] }, true)
 rf('ComposeRetentionCandidate', 'eligibility does not open the reason catalog', { ...candidate, decision: 'eligible', reasons: ['retention_eligible_typo'] }, false)
 rf('ComposeRetentionCandidate', 'unknown ownership/status/size', { ...candidate, deployment_id: null, status: null, age_seconds: null, decision: 'skipped', reasons: ['ownership_unknown'], logical_bytes: null, allocated_bytes: null }, true)
@@ -1275,6 +1292,14 @@ for (const field of ['basename', 'deployment_id']) for (const value of ['../131'
 for (const value of [{ ...candidate, reasons: ['raw inspect stderr'] }, { ...candidate, reasons: [] }, { ...candidate, allocated_bytes: -1 }, { ...candidate, logical_bytes: '10' }, { ...candidate, env: 'private' }, { ...candidate, inode: 123 }, { ...candidate, status: 'finished' }]) rf('ComposeRetentionCandidate', 'reject unsafe candidate', value, false)
 rf('ComposeRetentionOperation', 'completed result', operationPayload, true)
 rf('ComposeRetentionOperation', 'queued mutation', { ...operationPayload, state: 'queued', finished_at: null, result: null }, true)
+const adoptedResult = { ...result, adopted_count: 1 }
+rf('ComposeRetentionOperation', 'adoption reports ownership without deletion', { ...operationPayload, kind: 'adopt_legacy', result: adoptedResult }, true)
+rf('ComposeRetentionOperation', 'queued adoption has no invented result', { ...operationPayload, kind: 'adopt_legacy', state: 'queued', finished_at: null, result: null }, true)
+rf('ComposeRetentionOperation', 'adoption result requires adopted count', { ...operationPayload, kind: 'adopt_legacy' }, false)
+rf('ComposeRetentionOperation', 'apply cannot claim ownership adoption', { ...operationPayload, result: adoptedResult }, false)
+for (const value of [-1, true, '1']) rf('ComposeRetentionOperation', 'reject invalid adopted count', { ...operationPayload, kind: 'adopt_legacy', result: { ...result, adopted_count: value } }, false)
+for (const metric of ['count', 'logical_bytes', 'allocated_bytes']) rf('ComposeRetentionOperation', 'adoption cannot report deleted ' + metric, { ...operationPayload, kind: 'adopt_legacy', result: { ...adoptedResult, aggregates: { ...aggregates, deleted: { ...measure, [metric]: 1 } } } }, false)
+rf('ComposeRetentionOperation', 'adoption cannot contain a deleted outcome', { ...operationPayload, kind: 'adopt_legacy', result: { ...adoptedResult, outcomes: [{ ...candidate, decision: 'deleted' }] } }, false)
 for (const state of ['running', 'partial', 'blocked', 'failed']) rf('ComposeRetentionOperation', 'closed state ' + state, { ...operationPayload, state, reason: state === 'blocked' ? 'retention_not_ready' : null }, true)
 for (const value of [{ ...operationPayload, id: '1' }, { ...operationPayload, state: 'success' }, { ...operationPayload, reason: 'raw exception' }, { ...operationPayload, result: {} }, { ...operationPayload, credentials: 'private' }]) rf('ComposeRetentionOperation', 'reject malformed operation', value, false)
 rf('ComposeRetentionPin', 'durable active protection', pin, true)
@@ -1290,7 +1315,7 @@ rf('ComposeRetentionRejection', 'closed readiness rejection without operation', 
 for (const reason of ['inventory_limit_exceeded', 'preview_stale', 'ownership_unknown', 'executor_unverified', 'no_target', 'executor_busy', 'authority_denied', 'permit_invalid', 'scope_changed']) rf('ComposeRetentionRejection', 'closed rejection ' + reason, { message: rejectionMessage, reason }, true)
 for (const value of [{}, { reason: 'retention_not_ready' }, { message: rejectionMessage, reason: 'raw exception' }, { message: 'private stderr', reason: 'executor_busy' }, { message: rejectionMessage, reason: 'no_target', operation_id: rid }, { message: rejectionMessage, reason: 'no_target', stdout: 'private' }]) rf('ComposeRetentionRejection', 'reject untyped/leaking refusal', value, false)
 
-log('info', 'compose_retention_contract_checked', { operations: 5, fixtures: composeRetentionFixtures.length })
+log('info', 'compose_retention_contract_checked', { operations: 6, fixtures: composeRetentionFixtures.length })
 
 log('info', 'semantic_contract_passed', {
   operation_id: operation.operationId,

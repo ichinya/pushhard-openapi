@@ -514,6 +514,33 @@ components:
           minLength: 32
           maxLength: 256
           pattern: ^[A-Za-z0-9_-]+$
+    ComposeRetentionLegacyAdoptionRequest:
+      type: object
+      additionalProperties: false
+      description: >-
+        Явное подтверждение владения старыми scoped каталогами из полного frozen preview.
+        Подтверждение не разрешает удалить файлы и не обходит runtime/pin/path/authority guards.
+        Отсутствие confirm_ownership=true отклоняется до создания intent или marker.
+      required:
+        - preview_token
+        - idempotency_key
+        - confirm_ownership
+      properties:
+        preview_token:
+          type: string
+          minLength: 32
+          maxLength: 256
+          pattern: ^[A-Za-z0-9_-]+$
+        idempotency_key:
+          type: string
+          minLength: 32
+          maxLength: 256
+          pattern: ^[A-Za-z0-9_-]+$
+        confirm_ownership:
+          type: boolean
+          enum:
+            - true
+
     ComposeRetentionMeasure:
       type: object
       additionalProperties: false
@@ -670,6 +697,14 @@ components:
           type: integer
           minimum: 0
           nullable: true
+        legacy_adoption_available:
+          type: boolean
+          default: false
+          readOnly: true
+          description: >-
+            Кандидат доступен для отдельного подтверждения legacy ownership. Это не owner marker и не
+            разрешение удаления. Чужие/ambiguous, active/current/inflight, pinned, persistent/path-unsafe
+            или runtime/idle-unknown каталоги недоступны. Отсутствие поля эквивалентно false.
     ComposeRetentionPreview:
       type: object
       additionalProperties: false
@@ -677,7 +712,7 @@ components:
         Frozen version-1 dry-run: последние N успешных checkout плюс protected extras; terminal failed/cancelled
         отдельно и не расходуют N. GET не устанавливает helper, не adopt/delete и не меняет binding/deployment.
         Snapshot/cursor живёт 10 минут, связан с actor/auth mode/PAT/workspace/binding generation. Все страницы
-        имеют одинаковые preview_token/checked_at/revisions/aggregates; silent refresh запрещён. Apply проверяет
+        имеют одинаковые preview_token/checked_at/revisions/aggregates/legacy_adoption_count; silent refresh запрещён. Apply проверяет
         факты заново. Can_apply=false не выдаёт token. Per-tree unknown bytes остаются null без фиктивной
         экономии.
       required:
@@ -697,6 +732,15 @@ components:
         - candidates
         - next_cursor
       properties:
+        legacy_adoption_count:
+          type: integer
+          minimum: 0
+          nullable: true
+          readOnly: true
+          description: >-
+            Число доступных для отдельного ownership confirmation legacy-кандидатов во всём frozen
+            snapshot, не только текущей странице. Null означает, что число не установлено; поле не
+            предоставляет authority. Не меняется между страницами. После adoption нужен новый preview.
         version:
           type: integer
           enum:
@@ -872,6 +916,13 @@ components:
         - rollback_supported
         - outcomes
       properties:
+        adopted_count:
+          type: integer
+          minimum: 0
+          readOnly: true
+          description: >-
+            Только для kind=adopt_legacy: фактически подтверждённые matching durable receipt ownership
+            claims. Это не число удалённых каталогов и не reclaimed bytes; deleted counts/bytes равны 0.
         version:
           type: integer
           enum:
@@ -901,6 +952,40 @@ components:
           description: >-
             Безопасные per-candidate outcomes; полный объём ограничен validated server-side inventory
             byte/count/deadline budgets. Не выдавать truncated результат как complete.
+    ComposeRetentionAdoptionResult:
+      description: >-
+        Adoption-only результат. Ownership подтверждается отдельно от cleanup; original deployment
+        snapshots не переписываются. Outcomes показывают состояние после действия, включая skip/failure
+        и pending. Никакой delete или фиктивной экономии; после завершения получить новый preview.
+      allOf:
+        - $ref: '#/components/schemas/ComposeRetentionResult'
+        - type: object
+          required:
+            - adopted_count
+          properties:
+            aggregates:
+              type: object
+              properties:
+                deleted:
+                  type: object
+                  properties:
+                    count:
+                      type: integer
+                      enum: [0]
+                    logical_bytes:
+                      type: integer
+                      enum: [0]
+                    allocated_bytes:
+                      type: integer
+                      enum: [0]
+            outcomes:
+              type: array
+              items:
+                type: object
+                properties:
+                  decision:
+                    type: string
+                    enum: [eligible, retained, protected, skipped, failed, pending]
     ComposeRetentionOperation:
       type: object
       additionalProperties: false
@@ -924,6 +1009,7 @@ components:
           type: string
           enum:
             - prepare
+            - adopt_legacy
             - apply
             - lifecycle
             - reconcile
@@ -978,6 +1064,24 @@ components:
               nullable: true
               not:
                 type: object
+      oneOf:
+        - properties:
+            kind:
+              enum: [prepare, apply, lifecycle, reconcile]
+            result:
+              not:
+                type: object
+                required: [adopted_count]
+        - properties:
+            kind:
+              enum: [adopt_legacy]
+            result:
+              oneOf:
+                - $ref: '#/components/schemas/ComposeRetentionAdoptionResult'
+                - type: object
+                  nullable: true
+                  not:
+                    type: object
     ComposeRetentionPin:
       type: object
       additionalProperties: false
@@ -4964,6 +5068,102 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/ComposeRetentionEmptyRequest'
+  /projects/{project}/servers/{binding_id}/compose-retention/adopt-legacy:
+    post:
+      operationId: adoptProjectServerComposeRetentionLegacy
+      x-required-ability: admin
+      x-required-roles:
+        - admin
+        - devops
+      tags:
+        - Bindings
+      summary: Подтвердить владение старыми Compose-каталогами
+      description: >-
+        Отдельное audited ownership confirmation оператором; никогда не удаляет checkout/файлы и не
+        освобождает место. Только admin/devops и exact admin PAT ability; read/deploy не подразумеваются.
+        Требует complete actor/auth/workspace/binding-bound frozen preview и confirm_ownership=true.
+        Пути, candidate IDs, owner/writer flags, claims и budgets клиентом не задаются.
+
+        Принимается только серверный exact historical mapping без ambiguity. Active/current/inflight,
+        pinned, foreign, persistent/path-unsafe или runtime/idle-unknown каталоги сохраняются без adoption.
+        Fresh authority, physical identity, complete runtime, durable writer/maintenance и pin guards
+        проверяются до intent/permit и перед каждым candidate. Подтверждение не обходит readiness.
+        GET, prepare, обычный apply и lifecycle не выполняют first adoption.
+
+        Original execution snapshots не переписываются. Отдельный scoped claim связывает actor/intent,
+        historical digest, physical identity и matching durable helper receipt; lost reply/crash оставляет
+        pending до доказанного reconciliation, marker сам не доказывает разрешение adoption.
+        Повтор actor/scope/kind/idempotency identity с тем же input возвращает тот же intent; другой input
+        конфликтует409. Изменившийся preview требует нового snapshot. После завершения — новый preview
+        и отдельный обычный apply.10 requests/min; private evidence/credentials/paths не выдаются.
+      security:
+        - sanctum: []
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceSelector'
+        - $ref: '#/components/parameters/ProjectId'
+        - name: binding_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        '202':
+          description: Persisted asynchronous intent; результат получается через scoped operation poll.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComposeRetentionOperation'
+        '401':
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Известный membership role или exact PAT ability недостаточны.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceError'
+        '404':
+          description: Missing/foreign project, workspace, binding, operation, pin или cursor; один safe envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceError'
+        '409':
+          description: >-
+            Workspace selector/archive conflict, stale preview/revisions, expired snapshot или idempotency key с
+            другим input. Нужен новый preview; отказ не разрешает delete.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: '#/components/schemas/WorkspaceError'
+                  - $ref: '#/components/schemas/ComposeRetentionRejection'
+        '422':
+          description: >-
+            Неверный payload/cursor/ULID, wrong recipe, unknown pin target или retention_not_ready. Никакого
+            destructive dispatch до readiness; safe closed reason, без raw provider output.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: '#/components/schemas/ValidationError'
+                  - $ref: '#/components/schemas/ComposeRetentionRejection'
+        '429':
+          description: Bounded request throttle exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ComposeRetentionLegacyAdoptionRequest'
   /projects/{project}/servers/{binding_id}/compose-retention/apply:
     post:
       operationId: applyProjectServerComposeRetention
